@@ -229,6 +229,20 @@ fn goertzel_spectrum(samples: &[f32], sample_rate: f32) -> [f32; SPECTRUM_BANDS]
     let mut bands = [0.0; SPECTRUM_BANDS];
     let frame_count = samples.len() as f32;
     let nyquist = sample_rate * 0.5;
+    let windowed = samples
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, sample)| {
+            let window = if samples.len() > 1 {
+                0.5 - 0.5
+                    * (std::f32::consts::TAU * index as f32 / (samples.len() - 1) as f32).cos()
+            } else {
+                1.0
+            };
+            sample * window
+        })
+        .collect::<Vec<_>>();
     for (band, frequency) in bands.iter_mut().zip(BAND_FREQUENCIES) {
         if frequency >= nyquist * 0.98 {
             continue;
@@ -237,14 +251,8 @@ fn goertzel_spectrum(samples: &[f32], sample_rate: f32) -> [f32; SPECTRUM_BANDS]
         let coefficient = 2.0 * omega.cos();
         let mut previous = 0.0_f32;
         let mut before_previous = 0.0_f32;
-        for (index, sample) in samples.iter().copied().enumerate() {
-            let window = if samples.len() > 1 {
-                0.5 - 0.5
-                    * (std::f32::consts::TAU * index as f32 / (samples.len() - 1) as f32).cos()
-            } else {
-                1.0
-            };
-            let current = coefficient.mul_add(previous, sample * window) - before_previous;
+        for sample in &windowed {
+            let current = coefficient.mul_add(previous, *sample) - before_previous;
             before_previous = previous;
             previous = current;
         }
@@ -277,28 +285,41 @@ fn estimate_pitch(samples: &[f32], sample_rate: f32, rms: f32) -> (f32, f32) {
     if rms < 0.008 || samples.len() < 96 {
         return (0.0, 0.0);
     }
-    let min_lag = (sample_rate / 1_200.0).ceil().max(2.0) as usize;
-    let max_lag = ((sample_rate / 50.0).ceil() as usize).min(samples.len() / 2);
+    // Autocorrelation needs only enough bandwidth for the 50–1,200 Hz pitch
+    // range. Decimating high-rate PCM cuts the dominant O(n²) work by roughly
+    // an order of magnitude without reducing the reported pitch range.
+    let stride = (sample_rate / 12_000.0).ceil().max(1.0) as usize;
+    let sample_count = samples.len().div_ceil(stride);
+    let pitch_sample_rate = sample_rate / stride as f32;
+    let min_lag = (pitch_sample_rate / 1_200.0).ceil().max(2.0) as usize;
+    let max_lag = ((pitch_sample_rate / 50.0).ceil() as usize).min(sample_count / 2);
     if min_lag >= max_lag {
         return (0.0, 0.0);
     }
 
-    let mean = samples.iter().sum::<f32>() / samples.len() as f32;
+    let mean = (0..sample_count)
+        .map(|index| samples[index * stride])
+        .sum::<f32>()
+        / sample_count as f32;
     let mut best_lag = min_lag;
     let mut best_correlation = 0.0_f32;
     for lag in min_lag..=max_lag {
         let mut cross = 0.0;
         let mut left_energy = 0.0;
         let mut right_energy = 0.0;
-        for index in 0..samples.len() - lag {
-            let left = samples[index] - mean;
-            let right = samples[index + lag] - mean;
+        for index in 0..sample_count - lag {
+            let left = samples[index * stride] - mean;
+            let right = samples[(index + lag) * stride] - mean;
             cross += left * right;
             left_energy += left * left;
             right_energy += right * right;
         }
         let correlation = cross / (left_energy * right_energy).sqrt().max(0.000_001);
-        if correlation > best_correlation {
+        // Periodic signals have nearly identical peaks at integer multiples
+        // of the fundamental. Require a meaningful improvement before moving
+        // to a longer lag so tiny floating-point differences do not report a
+        // subharmonic (for example 110 Hz for a clean 440 Hz tone).
+        if correlation > best_correlation + 0.01 {
             best_correlation = correlation;
             best_lag = lag;
         }
@@ -311,7 +332,7 @@ fn estimate_pitch(samples: &[f32], sample_rate: f32, rms: f32) -> (f32, f32) {
     if confidence <= 0.0 {
         (0.0, 0.0)
     } else {
-        (sample_rate / best_lag as f32, confidence)
+        (pitch_sample_rate / best_lag as f32, confidence)
     }
 }
 
@@ -334,7 +355,10 @@ mod tests {
         assert!(features.energy > 0.7);
         assert!((-12.0..=-6.0).contains(&features.loudness_db));
         assert!((400.0..=500.0).contains(&features.dominant_frequency_hz));
-        assert!((430.0..=450.0).contains(&features.pitch_hz));
+        assert!(
+            (430.0..=450.0).contains(&features.pitch_hz),
+            "features: {features:?}"
+        );
         assert!(features.pitch_confidence > 0.8);
         assert!(features.mid > features.bass);
     }
@@ -359,7 +383,10 @@ mod tests {
             .collect::<Vec<_>>();
         let features = Analyzer::new(SAMPLE_RATE, 2).analyze(&samples);
         assert!(features.energy > 0.6);
-        assert!((210.0..=230.0).contains(&features.pitch_hz));
+        assert!(
+            (210.0..=230.0).contains(&features.pitch_hz),
+            "features: {features:?}"
+        );
     }
 
     #[test]

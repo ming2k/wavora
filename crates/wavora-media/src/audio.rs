@@ -4,6 +4,7 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use rodio::{Decoder, Source};
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -14,7 +15,15 @@ use thiserror::Error;
 use wavora_audio_analysis::{Analyzer, AudioFeatures};
 use wavora_core::PlaybackState;
 
-const FRAMES_PER_BUFFER: usize = 2_048;
+const FRAMES_PER_BUFFER: usize = 1_024;
+const ANALYSIS_WINDOW_FRAMES: usize = 2_048;
+
+#[derive(Debug, Clone, Copy)]
+struct TimedAnalysis {
+    position_ns: u64,
+    generation: u64,
+    features: AudioFeatures,
+}
 
 #[derive(Debug)]
 enum AudioCommand {
@@ -129,7 +138,7 @@ fn audio_worker(
         match commands.recv_timeout(Duration::from_millis(16)) {
             Ok(AudioCommand::Load(uri)) => {
                 let _ = events.send(AudioEvent::State(PlaybackState::Buffering));
-                match Playback::open(&uri, volume, events) {
+                match Playback::open(&uri, volume) {
                     Ok(new_playback) => {
                         playback = Some(new_playback);
                         requested_state = PlaybackState::Playing;
@@ -164,7 +173,7 @@ fn audio_worker(
                 }
             }
             Ok(AudioCommand::Seek(milliseconds)) => {
-                if let Some(active) = playback.as_ref()
+                if let Some(active) = playback.as_mut()
                     && let Err(error) = active.seek(milliseconds)
                 {
                     let _ = events.send(AudioEvent::Error(error));
@@ -183,7 +192,13 @@ fn audio_worker(
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
         }
 
-        if let Some(active) = playback.as_ref() {
+        if let Some(active) = playback.as_mut() {
+            let position_ms = active.position_ms();
+            if requested_state == PlaybackState::Playing
+                && let Some(features) = active.analysis_at(position_ms)
+            {
+                let _ = events.send(AudioEvent::Analysis(features));
+            }
             while let Some(message) = active.bus.timed_pop_filtered(
                 gst::ClockTime::ZERO,
                 &[gst::MessageType::Eos, gst::MessageType::Error],
@@ -209,7 +224,6 @@ fn audio_worker(
             }
             tick = tick.wrapping_add(1);
             if tick.is_multiple_of(6) {
-                let position_ms = active.position_ms();
                 let _ = events.send(AudioEvent::Position {
                     position_ms,
                     duration_ms: active.duration_ms,
@@ -236,6 +250,8 @@ struct DecodeState {
     channels: usize,
     sample_rate: u32,
     next_frame: u64,
+    analysis_window: Vec<f32>,
+    generation: u64,
     eos: bool,
 }
 
@@ -244,10 +260,13 @@ struct Playback {
     bus: gst::Bus,
     volume: gst::Element,
     duration_ms: u64,
+    analysis: Receiver<TimedAnalysis>,
+    pending_analysis: VecDeque<TimedAnalysis>,
+    analysis_generation: u64,
 }
 
 impl Playback {
-    fn open(uri: &str, volume: f32, events: &Sender<AudioEvent>) -> Result<Self, AudioError> {
+    fn open(uri: &str, volume: f32) -> Result<Self, AudioError> {
         let path = file_uri_to_path(uri).ok_or(AudioError::InvalidUri)?;
         let decoder = open_decoder(&path)?;
         let channels = usize::from(decoder.channels().get());
@@ -262,8 +281,11 @@ impl Playback {
             channels,
             sample_rate,
             next_frame: 0,
+            analysis_window: Vec::with_capacity(ANALYSIS_WINDOW_FRAMES.saturating_mul(channels)),
+            generation: 0,
             eos: false,
         }));
+        let (analysis_tx, analysis_rx) = crossbeam_channel::unbounded();
 
         let appsrc = gst::ElementFactory::make("appsrc")
             .name("wavora-decoded-audio")
@@ -295,13 +317,12 @@ impl Playback {
             appsrc.set_duration(gst::ClockTime::from_mseconds(duration_ms));
         }
 
-        let analysis_events = events.clone();
         let need_state = state.clone();
         let seek_state = state;
         appsrc.set_callbacks(
             gst_app::AppSrcCallbacks::builder()
                 .need_data(move |source, _| {
-                    push_decoded_buffer(source, &need_state, &analysis_events);
+                    push_decoded_buffer(source, &need_state, &analysis_tx);
                 })
                 .seek_data(move |_, offset| seek_decoder(&seek_state, offset))
                 .build(),
@@ -341,6 +362,9 @@ impl Playback {
             bus,
             volume: volume_element,
             duration_ms,
+            analysis: analysis_rx,
+            pending_analysis: VecDeque::new(),
+            analysis_generation: 0,
         })
     }
 
@@ -351,7 +375,9 @@ impl Playback {
             .map_err(|error| AudioError::Output(error.to_string()))
     }
 
-    fn seek(&self, milliseconds: u64) -> Result<(), AudioError> {
+    fn seek(&mut self, milliseconds: u64) -> Result<(), AudioError> {
+        self.pending_analysis.clear();
+        while self.analysis.try_recv().is_ok() {}
         self.pipeline
             .seek_simple(
                 gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
@@ -364,6 +390,32 @@ impl Playback {
         self.pipeline
             .query_position::<gst::ClockTime>()
             .map_or(0, gst::ClockTime::mseconds)
+    }
+
+    fn analysis_at(&mut self, position_ms: u64) -> Option<AudioFeatures> {
+        while let Ok(frame) = self.analysis.try_recv() {
+            if frame.generation > self.analysis_generation {
+                self.analysis_generation = frame.generation;
+                self.pending_analysis.clear();
+            }
+            if frame.generation == self.analysis_generation {
+                self.pending_analysis.push_back(frame);
+            }
+        }
+
+        let playhead_ns = position_ms.saturating_mul(1_000_000);
+        let mut latest = None;
+        while self
+            .pending_analysis
+            .front()
+            .is_some_and(|frame| frame.position_ns <= playhead_ns)
+        {
+            latest = self
+                .pending_analysis
+                .pop_front()
+                .map(|frame| frame.features);
+        }
+        latest
     }
 }
 
@@ -413,7 +465,7 @@ fn build_audio_sink() -> Result<gst::Element, AudioError> {
 fn push_decoded_buffer(
     appsrc: &gst_app::AppSrc,
     state: &Mutex<DecodeState>,
-    events: &Sender<AudioEvent>,
+    analysis: &Sender<TimedAnalysis>,
 ) {
     let Ok(mut state) = state.lock() else {
         let _ = appsrc.end_of_stream();
@@ -444,10 +496,33 @@ fn push_decoded_buffer(
         .next_frame
         .saturating_add(u64::try_from(frame_count).unwrap_or_default());
     let sample_rate = state.sample_rate;
-    let features = state.analyzer.analyze(&samples);
+    let analysis_capacity = ANALYSIS_WINDOW_FRAMES.saturating_mul(state.channels);
+    let retained_capacity = analysis_capacity.saturating_sub(samples.len());
+    if state.analysis_window.len() > retained_capacity {
+        let remove = state.analysis_window.len() - retained_capacity;
+        state.analysis_window.drain(..remove);
+    }
+    state.analysis_window.extend_from_slice(&samples);
+    let analysis_frame_count = state.analysis_window.len() / state.channels;
+    let analysis_frame = state
+        .next_frame
+        .saturating_sub(u64::try_from(analysis_frame_count / 2).unwrap_or_default());
+    let features = {
+        let DecodeState {
+            analyzer,
+            analysis_window,
+            ..
+        } = &mut *state;
+        analyzer.analyze(analysis_window)
+    };
+    let generation = state.generation;
     drop(state);
 
-    let _ = events.try_send(AudioEvent::Analysis(features));
+    let _ = analysis.send(TimedAnalysis {
+        position_ns: analysis_frame.saturating_mul(1_000_000_000) / u64::from(sample_rate),
+        generation,
+        features,
+    });
     let mut bytes = Vec::with_capacity(samples.len() * 4);
     for sample in samples {
         bytes.extend_from_slice(&sample.to_ne_bytes());
@@ -475,6 +550,8 @@ fn seek_decoder(state: &Mutex<DecodeState>, offset_ns: u64) -> bool {
                 offset_ns.saturating_mul(u64::from(state.sample_rate)) / 1_000_000_000;
             state.eos = false;
             state.analyzer.reset();
+            state.analysis_window.clear();
+            state.generation = state.generation.wrapping_add(1);
             true
         }
         Err(_) => false,

@@ -1,7 +1,8 @@
 # Wavora Architecture
 
-Wavora 沿用 Termus 已验证过的边界思想，但以 Rust channel 和 Optics 桌面栈实现。
-代码是 Cargo workspace，各 crate 只暴露相邻层真正需要的 API。
+Wavora follows the boundary design proven in Termus, implemented with Rust
+channels and the Optics desktop stack. The code is a Cargo workspace, and each
+crate exposes only the APIs required by adjacent layers.
 
 ```text
 Iris main thread
@@ -14,7 +15,7 @@ Iris main thread
   └─ commands ──> library worker ──> filesystem + decoder validation
 ```
 
-## Workspace 与依赖方向
+## Workspace and dependency direction
 
 ```text
 wavora (binary + app)
@@ -26,33 +27,58 @@ wavora (binary + app)
   │                  └─ Optics Iris / Flux
   └─ Optics Iris / Lens / Flux
 
-wavora-core    Track、PlaybackState 与纯格式化逻辑
-wavora-audio-analysis  与播放后端无关的 PCM 特征帧：频谱、音高、响度、三频、瞬态
-wavora-i18n    系统 locale 解析、语言偏好与类型化文案表
-wavora-media   文件 URI、异步扫描、内置解码、分析调度与原生输出
-wavora-visuals 六套独立构图、音频响应包络、预设转场与 Flux 绘制
-wavora         应用状态、配置持久化与 UI 编排
+wavora-core            Track, PlaybackState, and pure formatting logic
+wavora-audio-analysis  Backend-independent PCM feature frames: spectrum, pitch,
+                       loudness, low/mid/high bands, and transients
+wavora-i18n            System-locale resolution, language preferences, and typed
+                       localized-copy tables
+wavora-media           File URIs, asynchronous scanning, built-in decoding,
+                       analysis scheduling, and native output
+wavora-visuals         Six independent compositions, audio-response envelopes,
+                       preset transitions, and Flux drawing
+wavora                 Application state, configuration persistence, and UI
+                       orchestration
 ```
 
-- UI 不拥有解码器或扫描器。
-- 音频线程不触碰 Lens / Flux。
-- Flux paint callback 只读一份轻量视觉快照，不锁住 App 状态；视觉 crate 不依赖媒体层。
-- 音频分析 crate 不依赖解码器、GStreamer 或 UI；seek 时清空瞬态历史，避免伪鼓点。
-- 文件扫描使用可取消的流式遍历，并在工作线程中验证解码能力、读取真实时长。
-- 配置使用同目录临时文件 + rename 原子替换。
-- 播放器由 Symphonia/Rodio 解码为 `f32` PCM；GStreamer 只负责格式转换、重采样、
-  音量和本机输出，避免系统缺少 GStreamer codec 插件时常见格式无法播放。
-- seek 通过 GStreamer 时间轴回调到解码器；EOS 同时使用总线消息和末尾位置保护。
-- UI 字符串通过 `wavora-i18n::Key` 访问；默认偏好为 `System`，启动时解析系统 locale。
+- The UI does not own the decoder or scanner.
+- The audio thread does not access Lens or Flux.
+- The Flux paint callback reads only a lightweight visual snapshot and does
+  not lock application state. The visual crate does not depend on the media
+  layer.
+- The audio-analysis crate does not depend on the decoder, GStreamer, or the
+  UI. It clears transient history after a seek to prevent false beat events.
+- File scanning uses cancellable streaming traversal. A worker thread verifies
+  decoding support and reads the actual duration.
+- Configuration is replaced atomically by writing a temporary file in the
+  same directory and renaming it.
+- Symphonia and Rodio decode audio into `f32` PCM. GStreamer handles only format
+  conversion, resampling, volume, and native output, so common formats remain
+  playable when GStreamer codec plugins are unavailable.
+- Seek operations use the GStreamer timeline to call back into the decoder.
+  End of stream is detected through both bus messages and an end-position
+  guard.
+- UI strings are accessed through `wavora-i18n::Key` or
+  `visual_preset_text`. The visual-rendering crate stores only composition
+  types and palettes, not user-facing copy. The default language preference
+  is `System`, which resolves the system locale at startup.
+- The UI calculates the visual stage's logical-pixel viewport and writes it to
+  a lightweight visual snapshot. Flux callbacks draw in that local coordinate
+  system, excluding the control rail from particle compositions. Visual
+  adjustment parameters are persisted atomically with the main configuration.
 
-## 表格与滚动
+## Tables and scrolling
 
-曲目表格由 Lens 安全 Rust API 提供并按可视行虚拟化。表头与表体使用嵌套裁剪，单元格
-单独裁剪，确保长标题或艺人不会覆盖相邻列；滚动条始终可发现。Wayland 的物理滚动轴
-在 Iris 平台边界转换为 Lens 的逻辑约定，因此“向下滚”在所有 Lens 滚动控件中一致。
+The track table uses Lens's safe Rust API and virtualizes visible rows. Nested
+clipping is applied to the header and body, and each cell is clipped
+individually so long titles or artist names cannot overlap adjacent columns.
+The scrollbar remains discoverable. Iris converts Wayland's physical scroll
+axis to Lens's logical convention at the platform boundary, so scrolling down
+behaves consistently across all Lens scroll controls.
 
-## Optics 边界
+## Optics boundary
 
-属于通用图形/UI 能力的缺口应在 `../optics` 修复。本次在 Optics 中补齐了安全 Rust
-table API、虚拟化回调、单元格/表体裁剪、嵌套裁剪回放以及 Wayland 滚动轴转换；这些
-能力不包含任何 Wavora 业务逻辑。Wavora 只保存播放器特有的视觉编排和产品状态。
+Gaps in general-purpose graphics or UI capabilities belong in `../optics`.
+Optics provides the safe Rust table API, virtualization callbacks, cell and
+body clipping, nested-clip replay, and Wayland scroll-axis conversion. None of
+these capabilities contain Wavora business logic. Wavora retains only
+player-specific visual orchestration and product state.

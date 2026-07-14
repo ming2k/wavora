@@ -1,39 +1,53 @@
 # Wavora
 
-Wavora 是一个本地、沉浸式、多媒体音乐播放器。它使用 Rust 构建业务层，以
-[Optics](../optics) 的 Iris / Lens / Flux 图形栈呈现原生 Wayland + Vulkan UI。
-Rodio / Symphonia 在应用内完成音频解码，解码后的 PCM 再交给 GStreamer 与本机
-PipeWire、PulseAudio 或 ALSA 输出，因此播放常见格式不依赖 GStreamer 编解码插件。
+Wavora is a local, immersive multimedia music player. Its application layer
+is built in Rust, and its native Wayland and Vulkan UI is rendered with the
+Iris, Lens, and Flux graphics stack from [Optics](../optics). Rodio and
+Symphonia decode audio in the application. The decoded PCM is then passed to
+GStreamer and the system's PipeWire, PulseAudio, or ALSA output, so common
+formats do not depend on GStreamer codec plugins.
 
-当前产品方向：
+English is the project's working language. Use American English for project
+documentation and English for developer collaboration. The user interface
+remains localized in English and Simplified Chinese.
 
-- 本地优先，不依赖在线音乐账号或私有音源接口
-- 暗色、克制、具有空间层次的音乐舞台
-- 六种不同构图的视觉引擎，以 32 段频谱、音高、响度、低中高频与瞬态驱动画面
-- 播放、媒体扫描和渲染分离，避免阻塞 UI 帧
-- 跟随系统语言，也可在设置中固定为 English 或简体中文
-- 虚拟化曲目表格、固定表头、可见滚动条和符合 Wayland 习惯的滚动方向
-- 配置原子写入，启动恢复最近曲目、收藏、音量和视觉预设；损坏配置会备份后自动恢复
+Current product direction:
 
-内置解码格式：FLAC、MP3、M4A/AAC、Ogg Vorbis 和 WAV。扫描阶段会实际打开文件并
-读取时长；不能解码的文件会被跳过并给出汇总提示。
+- Local-first, with no dependency on online music accounts or proprietary
+  music-source APIs
+- A dark, restrained music stage with a strong sense of spatial depth
+- Six visual engines with distinct compositions, driven by a 32-band
+  spectrum, pitch, loudness, low/mid/high bands, and transients
+- Separate playback, media-scanning, and rendering paths to avoid blocking UI
+  frames
+- System-language detection, with settings to force English or Simplified
+  Chinese
+- A virtualized track table with a fixed header, visible scrollbar, and
+  Wayland-conventional scrolling direction
+- Atomic configuration writes and startup restoration of the most recent
+  track, favorites, volume, and visual preset; corrupt configuration is backed
+  up and recovered automatically
 
-## 运行
+Built-in decoding supports FLAC, MP3, M4A/AAC, Ogg Vorbis, and WAV. During
+scanning, Wavora opens each file and reads its actual duration. Files that
+cannot be decoded are skipped and included in a summary notice.
 
-先构建相邻的 Optics：
+## Run
+
+Build the adjacent Optics repository first:
 
 ```bash
 meson setup ../optics/build ../optics -Dexamples=true
 meson compile -C ../optics/build
 ```
 
-然后直接使用 Cargo 运行 Wavora：
+Then run Wavora directly with Cargo:
 
 ```bash
 cargo run --release
 ```
 
-也可以把音乐文件或目录传给它：
+You can also pass music files or directories:
 
 ```bash
 cargo run --release -- ~/Music
@@ -41,20 +55,22 @@ cargo run --release -- ~/Music/example.flac
 cargo run --release -- --visuals --preset=0
 ```
 
-`--visuals` 与 `--library` 可用于启动时直接进入视觉舞台或音乐库；`--preset=0..5`
-可临时预览指定视觉预设，不会覆盖已保存的选择。
+Use `--visuals` or `--library` to open the visual stage or music library at
+startup. Use `--preset=0..5` to preview a visual preset without overwriting the
+saved selection.
 
-本地安装（默认安装到 `~/.local`）会同时放置桌面启动器、图标、AppStream 元数据和
-Optics 运行库：
+A local installation defaults to `~/.local` and includes the desktop entry,
+icon, AppStream metadata, and Optics runtime libraries:
 
 ```bash
 ./packaging/install.sh
 ```
 
-可通过 `PREFIX=/custom/prefix ./packaging/install.sh` 修改目标前缀。GStreamer 基础库、
-本机音频输出插件以及 Vulkan/Wayland 驱动仍由系统提供。
+Set `PREFIX=/custom/prefix ./packaging/install.sh` to change the installation
+prefix. GStreamer base libraries, native audio-output plugins, and the Vulkan
+and Wayland drivers must still be provided by the system.
 
-## 验证
+## Verify
 
 ```bash
 cargo fmt --all --check
@@ -64,12 +80,15 @@ cargo build --workspace --release --locked
 cargo audit --no-fetch
 ```
 
-运行时依赖包括 Vulkan 1.3、Wayland、GStreamer 1.20+、`appsrc`、`audioconvert`、
-`audioresample`、`volume`，以及 PipeWire、PulseAudio、自动音频或 ALSA 输出插件之一。
-不要求安装 GStreamer 的 FLAC/MP3/AAC 解码插件。
+Runtime dependencies include Vulkan 1.3, Wayland, GStreamer 1.20+, `appsrc`,
+`audioconvert`, `audioresample`, `volume`, and one of the PipeWire, PulseAudio,
+automatic audio, or ALSA output plugins. GStreamer's FLAC, MP3, and AAC decoder
+plugins are not required.
 
-工作区按职责分为 `wavora-core`（领域模型）、`wavora-audio-analysis`（纯 PCM 特征提取）、
-`wavora-i18n`（语言解析与文案）、`wavora-media`（扫描、解码与输出）、
-`wavora-visuals`（预设、响应包络、转场与 Flux 绘制）和根应用（状态、持久化、Optics UI）。
-架构与设计约束见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 和
-[docs/DESIGN.md](docs/DESIGN.md)。
+The workspace is divided by responsibility into `wavora-core` (domain model),
+`wavora-audio-analysis` (pure PCM feature extraction), `wavora-i18n` (language
+resolution and localized copy), `wavora-media` (scanning, decoding, and
+output), `wavora-visuals` (presets, response envelopes, transitions, and Flux
+drawing), and the root application (state, persistence, and Optics UI). See
+[Architecture](docs/ARCHITECTURE.md) and [Design Direction](docs/DESIGN.md) for
+the architectural and design constraints.

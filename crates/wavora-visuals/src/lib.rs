@@ -193,6 +193,16 @@ impl VisualState {
             }
         });
     }
+
+    /// Whether host-owned motion still needs an active-rate follow-up frame.
+    ///
+    /// Playback continuously advances the scene. After playback or a preset
+    /// transition stops, frames continue only until the visible envelopes
+    /// have settled, allowing Iris to return to its low-power idle cadence.
+    #[must_use]
+    pub fn needs_animation_frame(&self) -> bool {
+        self.playing || self.transition > 0.0 || !features_are_settled(&self.features)
+    }
 }
 
 pub type SharedVisualState = Arc<RwLock<VisualState>>;
@@ -279,6 +289,38 @@ fn envelope(current: f32, target: f32, attack: f32, release: f32, dt: f32) -> f3
     let speed = if target > current { attack } else { release };
     let blend = 1.0 - (-speed * dt).exp();
     current + (target - current) * blend
+}
+
+fn features_are_settled(features: &AudioFeatures) -> bool {
+    const LEVEL_EPSILON: f32 = 0.000_5;
+    const FREQUENCY_EPSILON_HZ: f32 = 0.5;
+    const LOUDNESS_EPSILON_DB: f32 = 0.05;
+
+    (features.loudness_db + 120.0).abs() < LOUDNESS_EPSILON_DB
+        && [
+            features.energy,
+            features.rms,
+            features.peak,
+            features.bass,
+            features.mid,
+            features.treble,
+            features.pitch_confidence,
+            features.spectral_flux,
+            features.onset,
+        ]
+        .into_iter()
+        .all(|value| value.abs() < LEVEL_EPSILON)
+        && [
+            features.spectral_centroid_hz,
+            features.dominant_frequency_hz,
+            features.pitch_hz,
+        ]
+        .into_iter()
+        .all(|value| value.abs() < FREQUENCY_EPSILON_HZ)
+        && features
+            .spectrum
+            .iter()
+            .all(|value| value.abs() < LEVEL_EPSILON)
 }
 
 fn paint_scene(canvas: &Canvas, state: &VisualState) {
@@ -984,6 +1026,39 @@ mod tests {
     }
 
     #[test]
+    fn animation_frames_stop_only_after_motion_settles() {
+        let mut state = VisualState::default();
+        assert!(!state.needs_animation_frame());
+
+        state.playing = true;
+        assert!(state.needs_animation_frame());
+
+        state.playing = false;
+        state.features.energy = 0.02;
+        assert!(state.needs_animation_frame());
+
+        state.features = AudioFeatures::default();
+        state.transition = 0.25;
+        assert!(state.needs_animation_frame());
+
+        state.transition = 0.0;
+        assert!(!state.needs_animation_frame());
+    }
+
+    #[test]
+    fn exponential_envelope_is_frame_rate_independent() {
+        let mut at_30_fps = 0.0;
+        let mut at_60_fps = 0.0;
+        for _ in 0..30 {
+            at_30_fps = envelope(at_30_fps, 1.0, 8.0, 3.0, 1.0 / 30.0);
+        }
+        for _ in 0..60 {
+            at_60_fps = envelope(at_60_fps, 1.0, 8.0, 3.0, 1.0 / 60.0);
+        }
+        assert!((at_30_fps - at_60_fps).abs() < 0.000_01);
+    }
+
+    #[test]
     fn tuning_is_normalized_to_safe_rendering_ranges() {
         let tuning = VisualTuning {
             intensity: 9.0,
@@ -992,9 +1067,9 @@ mod tests {
             glow: 0.0,
         }
         .normalized();
-        assert_eq!(tuning.intensity, 1.75);
-        assert_eq!(tuning.motion, 0.35);
-        assert_eq!(tuning.depth, 1.50);
-        assert_eq!(tuning.glow, 0.25);
+        assert!((tuning.intensity - 1.75).abs() < f32::EPSILON);
+        assert!((tuning.motion - 0.35).abs() < f32::EPSILON);
+        assert!((tuning.depth - 1.50).abs() < f32::EPSILON);
+        assert!((tuning.glow - 0.25).abs() < f32::EPSILON);
     }
 }

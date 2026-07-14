@@ -1,25 +1,43 @@
 # Wavora Design Direction
 
-视觉参考来自 Mineradio 的沉浸式舞台、歌词层级与黄金玻璃质感，但 Wavora 不复制其
-Electron 页面结构。Optics 原生实现遵守以下规则：
+The visual direction takes inspiration from Mineradio's immersive stage,
+lyric hierarchy, and warm golden-glass aesthetic without copying its Electron
+page structure. The native Optics implementation follows these rules:
 
-- 背景以近黑 `#030508` 为基底，强调色只负责空间光和交互反馈。
-- 大面板透明度克制，使用边缘高光、暗部厚度和内外层阴影表达玻璃，而不是大面积白色渐变。
-- 底部播放控制台是稳定视觉锚点；播放、暂停、切歌不能因视觉预设改变而失效。
-- 粒子保持规整、轻微呼吸；频率、音高、响度和瞬态应映射到可辨认的空间属性，
-  避免随机噪声式“热闹”。
-- 视觉页采用“主舞台 + 控制轨”：构图留在连续画布中，预设与参数收在高密度侧栏；
-  响应强度、运动速率、空间纵深和辉光由用户调节并持久化。
-- 所有视觉名称、响应说明与实时指标都必须通过 i18n catalog 输出，渲染模块不持有
-  面向用户的中英文文案，避免切换语言后出现混排。
-- 窗口可见时保持正常动画质量；性能策略通过缓存和减少重算实现。
-- 歌词与 3D 媒体陈列属于后续舞台层，不得压住核心播放控制和可读信息。
+- The background starts from near-black `#030508`; accent colors are reserved
+  for spatial lighting and interaction feedback.
+- Large panels use restrained transparency. Edge highlights, dark material
+  depth, and inner and outer shadows create the glass effect instead of broad
+  white gradients.
+- The bottom playback console is a stable visual anchor. Changing visual
+  presets must not disrupt play, pause, or track navigation.
+- Particles remain orderly with subtle breathing motion. Frequency, pitch,
+  loudness, and transients map to recognizable spatial properties rather than
+  arbitrary visual noise.
+- The visual page uses a main stage with a control rail. Compositions stay on
+  a continuous canvas, while presets and parameters sit in a dense sidebar.
+  Users can adjust and persist response intensity, motion speed, spatial
+  depth, and glow.
+- All visual names, response descriptions, and live metrics come from the
+  i18n catalog. Rendering modules contain no user-facing English or Chinese
+  copy, which prevents mixed-language output after switching languages.
+- Normal animation quality is maintained while the window is visible.
+  Performance optimizations use caching and avoid redundant computation.
+- Lyrics and 3D media displays are future stage layers. They must not obscure
+  core playback controls or readable information.
 
-内置六套独立构图：Particle Veil、Pulse Tunnel、Orbital Core、Spectral Void、
-Vinyl Halo、Star River，分别使用粒幕、纵深隧道、频率轨道、日蚀、唱片刻纹和三频流场；
-预设切换不改变信息架构和交互位置。音频特征帧随 PCM 缓冲产生，视觉侧统一执行按时间计算的
-攻击/释放平滑，暂停后自然衰减而不冻结在最后一帧。
+The six built-in compositions are Particle Veil, Pulse Tunnel, Orbital Core,
+Spectral Void, Vinyl Halo, and Star River. They use a particle curtain, depth
+tunnel, frequency orbits, eclipse, vinyl grooves, and a three-band flow field,
+respectively. Switching presets does not change the information architecture
+or control positions. Audio feature frames are generated with each PCM buffer.
+The visual layer applies time-based attack and release smoothing consistently,
+allowing the composition to decay naturally during pauses instead of freezing
+on the last frame.
 
-Particle Veil 使用透视投影的粒子织面、深度尘埃与三频流线：音高控制折叠速度，中频控制
-曲面起伏，频谱质心改变转向，低频与瞬态改变弯曲和粒径。舞台坐标保持逻辑像素，不依赖
-窗口设备缩放，2× HiDPI 下也不得把构图裁成窄带。
+Particle Veil uses a perspective-projected particle mesh, depth dust, and
+three-band streamlines. Pitch controls folding speed, midrange controls surface
+undulation, spectral centroid changes steering, and bass and transients affect
+curvature and particle size. Stage coordinates remain in logical pixels and do
+not depend on the window's device scale, preventing the composition from being
+cropped into a narrow band at 2× HiDPI.

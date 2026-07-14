@@ -1,5 +1,5 @@
 use crate::config::{AppConfig, ConfigError, ConfigStore};
-use iris::{Application, Config, Input, TextBuf};
+use iris::{Application, Config, Input, TextBuf, request_animation_frame};
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -55,7 +55,7 @@ pub struct App {
     visuals: SharedVisualState,
     loaded_uri: Option<String>,
     autoplay_uri: Option<String>,
-    preset_override: bool,
+    preset_override: Option<usize>,
     dirty_config: bool,
     config_save_due: Instant,
     last_frame: Instant,
@@ -143,7 +143,7 @@ impl App {
             visuals,
             loaded_uri: None,
             autoplay_uri,
-            preset_override: false,
+            preset_override: None,
             dirty_config,
             config_save_due: Instant::now() + Duration::from_millis(350),
             last_frame: Instant::now(),
@@ -167,7 +167,7 @@ impl App {
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
         let raw = input.as_raw();
-        if let Ok(mut visual) = self.visuals.write() {
+        let animation_pending = if let Ok(mut visual) = self.visuals.write() {
             visual.update(
                 dt,
                 raw.display_size.x,
@@ -179,6 +179,12 @@ impl App {
                 self.visual_tuning,
                 self.view == View::Visuals,
             );
+            visual.needs_animation_frame()
+        } else {
+            false
+        };
+        if animation_pending {
+            request_animation_frame();
         }
         if self.dirty_config && now >= self.config_save_due {
             self.save_config();
@@ -416,7 +422,7 @@ impl App {
 
     pub fn set_preset(&mut self, preset: usize) {
         self.preset = preset % PRESETS.len();
-        self.preset_override = false;
+        self.preset_override = None;
         self.config.visual_preset = self.preset;
         self.mark_config_dirty();
     }
@@ -561,7 +567,7 @@ impl App {
 
     fn save_config(&mut self) {
         self.config.volume = self.volume;
-        if !self.preset_override {
+        if self.preset_override.is_none() {
             self.config.visual_preset = self.preset;
         }
         self.config.visual_intensity = self.visual_tuning.intensity;
@@ -623,7 +629,7 @@ pub fn run() -> Result<(), AppError> {
     }
     if let Some(preset) = requested_preset {
         app.preset = preset;
-        app.preset_override = true;
+        app.preset_override = Some(preset);
     }
     if let Some(backup) = recovered_config {
         app.set_toast(
