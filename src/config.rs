@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use wavora_i18n::LanguagePreference;
 
-const CONFIG_VERSION: u32 = 2;
+const CONFIG_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -19,6 +19,10 @@ pub struct AppConfig {
     pub last_track_uri: Option<String>,
     pub volume: f32,
     pub visual_preset: usize,
+    pub visual_intensity: f32,
+    pub visual_motion: f32,
+    pub visual_depth: f32,
+    pub visual_glow: f32,
     pub language: LanguagePreference,
 }
 
@@ -32,6 +36,10 @@ impl Default for AppConfig {
             last_track_uri: None,
             volume: 0.72,
             visual_preset: 0,
+            visual_intensity: 1.0,
+            visual_motion: 1.0,
+            visual_depth: 1.0,
+            visual_glow: 0.9,
             language: LanguagePreference::System,
         }
     }
@@ -42,6 +50,10 @@ impl AppConfig {
         self.version = CONFIG_VERSION;
         self.volume = self.volume.clamp(0.0, 1.0);
         self.visual_preset %= wavora_visuals::PRESETS.len();
+        self.visual_intensity = self.visual_intensity.clamp(0.45, 1.75);
+        self.visual_motion = self.visual_motion.clamp(0.35, 1.65);
+        self.visual_depth = self.visual_depth.clamp(0.50, 1.50);
+        self.visual_glow = self.visual_glow.clamp(0.25, 1.50);
         self.library_roots.sort();
         self.library_roots.dedup();
         let mut seen_recent = HashSet::new();

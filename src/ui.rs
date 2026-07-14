@@ -1,7 +1,7 @@
 use crate::app::{App, View};
 use iris::{Align, Color, Frame, Icon, LayoutOpts, TableColumn, TableOpts, Theme};
 use wavora_core::format_duration;
-use wavora_i18n::{Key, Language, LanguagePreference, text};
+use wavora_i18n::{Key, Language, LanguagePreference, text, visual_preset_text};
 use wavora_visuals::PRESETS;
 
 const ROOT_PAD: f32 = 18.0;
@@ -10,6 +10,8 @@ const TOP_BAR_HEIGHT: f32 = 54.0;
 const COMPACT_NAV_HEIGHT: f32 = 46.0;
 const STATUS_HEIGHT: f32 = 40.0;
 const PLAYER_HEIGHT: f32 = 100.0;
+const VISUAL_RAIL_WIDTH: f32 = 236.0;
+const VISUAL_STAGE_GAP: f32 = 12.0;
 
 #[must_use]
 pub fn theme(preset: usize) -> Theme {
@@ -64,6 +66,48 @@ pub fn build(app: &mut App, frame: &mut Frame, width: f32, height: f32) {
         + GAP * root_gap_count
         + ROOT_PAD * 2.0;
     let content_height = (height - chrome_height).max(220.0);
+    let content_y = ROOT_PAD
+        + TOP_BAR_HEIGHT
+        + GAP
+        + if show_sidebar {
+            0.0
+        } else {
+            COMPACT_NAV_HEIGHT + GAP
+        }
+        + if status_visible {
+            STATUS_HEIGHT + GAP
+        } else {
+            0.0
+        };
+    let content_x = ROOT_PAD
+        + if show_sidebar {
+            sidebar_width + GAP
+        } else {
+            0.0
+        };
+    if app.view == View::Visuals {
+        let inner_width = (panel_width - 44.0).max(1.0);
+        let inner_height = (content_height - 44.0).max(1.0);
+        let side_controls = inner_width >= 620.0;
+        let stage_width = if side_controls {
+            (inner_width - VISUAL_RAIL_WIDTH - VISUAL_STAGE_GAP).max(1.0)
+        } else {
+            inner_width
+        };
+        let stage_height = if side_controls {
+            inner_height
+        } else {
+            stacked_visual_stage_height(inner_height)
+        };
+        app.set_visual_viewport(Some((
+            content_x + 22.0,
+            content_y + 22.0,
+            stage_width,
+            stage_height,
+        )));
+    } else {
+        app.set_visual_viewport(None);
+    }
 
     frame.column_ex(
         &LayoutOpts {
@@ -291,13 +335,18 @@ fn nav_item(app: &mut App, frame: &mut Frame, icon: Icon, label: &str, view: Vie
 }
 
 fn main_content(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: Language) {
+    let background = if app.view == View::Visuals {
+        Color::rgba(6, 9, 14, 92)
+    } else {
+        Color::rgba(8, 11, 16, 194)
+    };
     frame.column_ex(
         &LayoutOpts {
             flex: 1.0,
             gap: 12.0,
             pad: 22.0,
             cross: Align::Stretch,
-            bg: Color::rgba(8, 11, 16, 194),
+            bg: background,
             radius: 24.0,
             ..LayoutOpts::default()
         },
@@ -305,7 +354,7 @@ fn main_content(app: &mut App, frame: &mut Frame, width: f32, height: f32, langu
             View::Home => home(app, frame, width, language),
             View::Library => library(app, frame, false, width, height, language),
             View::Favorites => library(app, frame, true, width, height, language),
-            View::Visuals => visuals(app, frame, language),
+            View::Visuals => visuals(app, frame, width, height, language),
             View::Settings => settings(app, frame, width, language),
         },
     );
@@ -360,8 +409,8 @@ fn home(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
                 insight_card(
                     frame,
                     text(language, Key::VisualCard),
-                    PRESETS[app.preset].name,
-                    PRESETS[app.preset].subtitle,
+                    visual_preset_text(language, app.preset).name,
+                    visual_preset_text(language, app.preset).subtitle,
                 );
                 insight_card(
                     frame,
@@ -530,40 +579,220 @@ fn library(
     }
 }
 
-fn visuals(app: &mut App, frame: &mut Frame, language: Language) {
-    frame.heading(text(language, Key::VisualStage), 1);
-    frame.label_wrapped(text(language, Key::VisualDescription), 680.0);
+fn visuals(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: Language) {
+    let inner_width = (width - 44.0).max(1.0);
+    let inner_height = (height - 44.0).max(1.0);
+    if inner_width >= 620.0 {
+        let stage_width = (inner_width - VISUAL_RAIL_WIDTH - VISUAL_STAGE_GAP).max(1.0);
+        frame.row_ex(
+            &LayoutOpts {
+                flex: 1.0,
+                gap: VISUAL_STAGE_GAP,
+                cross: Align::Stretch,
+                ..LayoutOpts::default()
+            },
+            |frame| {
+                visual_stage(app, frame, stage_width, inner_height, language);
+                visual_controls(app, frame, VISUAL_RAIL_WIDTH, language);
+            },
+        );
+    } else {
+        let stage_height = stacked_visual_stage_height(inner_height);
+        frame.column_ex(
+            &LayoutOpts {
+                flex: 1.0,
+                gap: VISUAL_STAGE_GAP,
+                cross: Align::Stretch,
+                ..LayoutOpts::default()
+            },
+            |frame| {
+                visual_stage(app, frame, inner_width, stage_height, language);
+                visual_controls(app, frame, inner_width, language);
+            },
+        );
+    }
+}
+
+fn stacked_visual_stage_height(inner_height: f32) -> f32 {
+    (inner_height * 0.46).clamp(210.0, 300.0).min(inner_height)
+}
+
+fn visual_stage(app: &App, frame: &mut Frame, width: f32, height: f32, language: Language) {
+    let copy = visual_preset_text(language, app.preset);
     let features = app.live_audio_features();
+    let is_live = app.playback_state.is_playing();
+    frame.column_ex(
+        &LayoutOpts {
+            flex: 1.0,
+            width,
+            height,
+            gap: 6.0,
+            pad: 16.0,
+            cross: Align::Stretch,
+            bg: Color::rgba(3, 6, 11, 42),
+            radius: 18.0,
+        },
+        |frame| {
+            frame.row_ex(
+                &LayoutOpts {
+                    gap: 8.0,
+                    cross: Align::Center,
+                    ..LayoutOpts::default()
+                },
+                |frame| {
+                    frame.label_sized(text(language, Key::VisualPreview), 8.5);
+                    frame.flex(1.0);
+                    frame.label_sized(
+                        if is_live {
+                            text(language, Key::Live)
+                        } else {
+                            text(language, Key::WaitingForAudio)
+                        },
+                        8.5,
+                    );
+                },
+            );
+            frame.label_sized(copy.name, if width >= 430.0 { 27.0 } else { 22.0 });
+            frame.label_wrapped_sized(copy.subtitle, 11.0, (width - 32.0).max(120.0));
+            frame.label_wrapped_sized(copy.response, 9.5, (width - 32.0).max(120.0));
+            frame.flex(1.0);
+            frame.spacer(0.0);
+            if height >= 340.0 {
+                visual_metrics(frame, features, language);
+            } else {
+                let pitch = if features.pitch_confidence > 0.2 {
+                    format!("{:.0} Hz", features.pitch_hz)
+                } else {
+                    "—".to_owned()
+                };
+                frame.label_wrapped_sized(
+                    &format!(
+                        "{} {:.1} dBFS  ·  {} {pitch}  ·  {} {:.0}%",
+                        text(language, Key::Loudness),
+                        features.loudness_db,
+                        text(language, Key::Pitch),
+                        text(language, Key::Onset),
+                        features.onset * 100.0
+                    ),
+                    9.0,
+                    (width - 32.0).max(120.0),
+                );
+            }
+        },
+    );
+}
+
+fn visual_metrics(frame: &mut Frame, features: wavora_media::AudioFeatures, language: Language) {
     let pitch = if features.pitch_confidence > 0.2 {
         format!("{:.0} Hz", features.pitch_hz)
     } else {
         "—".to_owned()
     };
-    frame.label_wrapped_sized(
-        &format!(
-            "LIVE  ·  LOUDNESS {:.1} dBFS  ·  PITCH {pitch}  ·  CENTROID {:.0} Hz  ·  ONSET {:.0}%",
-            features.loudness_db,
-            features.spectral_centroid_hz,
-            features.onset * 100.0
-        ),
-        10.0,
-        680.0,
+    let values = [
+        format!("{:.1} dBFS", features.loudness_db),
+        pitch,
+        format!("{:.0} Hz", features.spectral_centroid_hz),
+        format!("{:.0}%", features.onset * 100.0),
+    ];
+    let labels = [
+        text(language, Key::Loudness),
+        text(language, Key::Pitch),
+        text(language, Key::Centroid),
+        text(language, Key::Onset),
+    ];
+    frame.row_ex(
+        &LayoutOpts {
+            height: 58.0,
+            gap: 6.0,
+            cross: Align::Stretch,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            for (label, value) in labels.into_iter().zip(values) {
+                frame.flex(1.0);
+                frame.column_ex(
+                    &LayoutOpts {
+                        flex: 1.0,
+                        height: 58.0,
+                        gap: 2.0,
+                        pad: 8.0,
+                        bg: Color::rgba(255, 255, 255, 12),
+                        radius: 11.0,
+                        ..LayoutOpts::default()
+                    },
+                    |frame| {
+                        frame.label_compact_sized(label, 8.0);
+                        frame.label_compact_sized(&value, 10.0);
+                    },
+                );
+            }
+        },
     );
-    frame.spacer(12.0);
-    for (index, preset) in PRESETS.iter().enumerate() {
-        frame.size_next(0.0, 62.0);
-        if frame.selectable(
-            &format!(
-                "{}\n{}  ·  {}",
-                preset.name, preset.subtitle, preset.response
-            ),
-            app.preset == index,
-        ) {
-            app.set_preset(index);
-        }
-    }
-    frame.flex(1.0);
-    frame.label_sized(text(language, Key::VisualFootnote), 10.5);
+}
+
+fn visual_controls(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
+    frame.column_ex(
+        &LayoutOpts {
+            flex: 1.0,
+            width,
+            gap: 7.0,
+            pad: 14.0,
+            cross: Align::Stretch,
+            bg: Color::rgba(5, 8, 13, 224),
+            radius: 18.0,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            frame.heading(text(language, Key::VisualControls), 2);
+            frame.label_sized(
+                if app.playback_state.is_playing() {
+                    text(language, Key::Listening)
+                } else {
+                    text(language, Key::WaitingForAudio)
+                },
+                9.0,
+            );
+            frame.separator();
+            frame.flex(1.0);
+            frame.scroll("visual-control-scroll", |frame| {
+                frame.label_sized(text(language, Key::VisualPresets), 8.5);
+                for index in 0..PRESETS.len() {
+                    let copy = visual_preset_text(language, index);
+                    frame.size_next(0.0, 36.0);
+                    if frame.selectable(copy.name, app.preset == index) {
+                        app.set_preset(index);
+                    }
+                }
+                frame.spacer(5.0);
+                frame.separator();
+                frame.spacer(5.0);
+                let mut changed = false;
+                frame.label_sized(text(language, Key::Intensity), 8.5);
+                changed |= frame.slider(
+                    "##visual-intensity",
+                    &mut app.visual_tuning.intensity,
+                    0.45,
+                    1.75,
+                );
+                frame.label_sized(text(language, Key::Motion), 8.5);
+                changed |=
+                    frame.slider("##visual-motion", &mut app.visual_tuning.motion, 0.35, 1.65);
+                frame.label_sized(text(language, Key::Depth), 8.5);
+                changed |= frame.slider("##visual-depth", &mut app.visual_tuning.depth, 0.50, 1.50);
+                frame.label_sized(text(language, Key::Glow), 8.5);
+                changed |= frame.slider("##visual-glow", &mut app.visual_tuning.glow, 0.25, 1.50);
+                if changed {
+                    app.apply_visual_tuning();
+                }
+                frame.spacer(8.0);
+                frame.label_wrapped_sized(
+                    text(language, Key::VisualFootnote),
+                    8.5,
+                    (width - 28.0).max(120.0),
+                );
+            });
+        },
+    );
 }
 
 fn settings(app: &mut App, frame: &mut Frame, width: f32, language: Language) {

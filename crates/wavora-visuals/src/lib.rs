@@ -24,9 +24,6 @@ pub enum VisualKind {
 #[derive(Debug, Clone, Copy)]
 pub struct VisualPreset {
     pub kind: VisualKind,
-    pub name: &'static str,
-    pub subtitle: &'static str,
-    pub response: &'static str,
     pub accent: [u8; 3],
     pub secondary: [u8; 3],
 }
@@ -36,53 +33,81 @@ pub struct VisualPreset {
 pub const PRESETS: [VisualPreset; 6] = [
     VisualPreset {
         kind: VisualKind::ParticleVeil,
-        name: "Particle Veil",
-        subtitle: "粒幕 · 音高折叠",
-        response: "音高 / 中频 / 频谱质心",
         accent: [112, 246, 218],
         secondary: [108, 149, 255],
     },
     VisualPreset {
         kind: VisualKind::PulseTunnel,
-        name: "Pulse Tunnel",
-        subtitle: "滚筒 · 低频纵深",
-        response: "低频 / 瞬态 / 响度",
         accent: [255, 92, 112],
         secondary: [244, 210, 138],
     },
     VisualPreset {
         kind: VisualKind::OrbitalCore,
-        name: "Orbital Core",
-        subtitle: "星球 · 频率轨道",
-        response: "主频 / 高音 / 能量",
         accent: [104, 205, 255],
         secondary: [139, 109, 255],
     },
     VisualPreset {
         kind: VisualKind::SpectralVoid,
-        name: "Spectral Void",
-        subtitle: "虚空 · 瞬态日蚀",
-        response: "频谱 / 峰值 / 瞬态",
         accent: [174, 111, 255],
         secondary: [72, 218, 255],
     },
     VisualPreset {
         kind: VisualKind::VinylHalo,
-        name: "Vinyl Halo",
-        subtitle: "唱片 · 响度刻纹",
-        response: "响度 / 低频 / 频谱",
         accent: [244, 210, 138],
         secondary: [255, 126, 91],
     },
     VisualPreset {
         kind: VisualKind::StarRiver,
-        name: "Star River",
-        subtitle: "星河 · 三频流场",
-        response: "低频 / 中频 / 高频",
         accent: [125, 232, 203],
         secondary: [126, 151, 255],
     },
 ];
+
+/// User-facing response controls shared by all compositions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisualTuning {
+    pub intensity: f32,
+    pub motion: f32,
+    pub depth: f32,
+    pub glow: f32,
+}
+
+impl Default for VisualTuning {
+    fn default() -> Self {
+        Self {
+            intensity: 1.0,
+            motion: 1.0,
+            depth: 1.0,
+            glow: 0.9,
+        }
+    }
+}
+
+impl VisualTuning {
+    #[must_use]
+    pub fn normalized(self) -> Self {
+        Self {
+            intensity: self.intensity.clamp(0.45, 1.75),
+            motion: self.motion.clamp(0.35, 1.65),
+            depth: self.depth.clamp(0.50, 1.50),
+            glow: self.glow.clamp(0.25, 1.50),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct StageViewport {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+impl StageViewport {
+    fn is_visible(self) -> bool {
+        self.width >= 80.0 && self.height >= 80.0
+    }
+}
 
 /// Render-thread snapshot. Audio fields are smoothed here rather than in the
 /// decoder so every visual backend observes the same attack/release behavior.
@@ -95,6 +120,9 @@ pub struct VisualState {
     pub playing: bool,
     pub features: AudioFeatures,
     pub preset: usize,
+    pub tuning: VisualTuning,
+    pub stage_active: bool,
+    viewport: StageViewport,
     transition: f32,
 }
 
@@ -108,6 +136,9 @@ impl Default for VisualState {
             playing: false,
             features: AudioFeatures::default(),
             preset: 0,
+            tuning: VisualTuning::default(),
+            stage_active: false,
+            viewport: StageViewport::default(),
             transition: 0.0,
         }
     }
@@ -125,13 +156,17 @@ impl VisualState {
         position_ratio: f32,
         preset: usize,
         measured: AudioFeatures,
+        tuning: VisualTuning,
+        stage_active: bool,
     ) {
         let dt = dt.clamp(0.0, 0.1);
         self.width = width.max(1.0);
         self.height = height.max(1.0);
-        self.elapsed += dt;
+        self.tuning = tuning.normalized();
+        self.elapsed += dt * self.tuning.motion;
         self.position_ratio = position_ratio.clamp(0.0, 1.0);
         self.playing = playing;
+        self.stage_active = stage_active;
         let preset = preset % PRESETS.len();
         if preset != self.preset {
             self.preset = preset;
@@ -139,12 +174,24 @@ impl VisualState {
         }
         self.transition = (self.transition - dt * 1.45).max(0.0);
 
-        let target = if playing {
+        let mut target = if playing {
             measured
         } else {
             AudioFeatures::default()
         };
+        apply_intensity(&mut target, self.tuning.intensity);
         smooth_features(&mut self.features, &target, dt);
+    }
+
+    pub fn set_stage_viewport(&mut self, viewport: Option<(f32, f32, f32, f32)>) {
+        self.viewport = viewport.map_or_else(StageViewport::default, |(x, y, width, height)| {
+            StageViewport {
+                x,
+                y,
+                width: width.max(0.0),
+                height: height.max(0.0),
+            }
+        });
     }
 }
 
@@ -213,6 +260,21 @@ fn smooth_features(visible: &mut AudioFeatures, target: &AudioFeatures, dt: f32)
     }
 }
 
+fn apply_intensity(features: &mut AudioFeatures, intensity: f32) {
+    let scale = |value: &mut f32| *value = (*value * intensity).clamp(0.0, 1.0);
+    scale(&mut features.energy);
+    scale(&mut features.rms);
+    scale(&mut features.peak);
+    scale(&mut features.bass);
+    scale(&mut features.mid);
+    scale(&mut features.treble);
+    scale(&mut features.spectral_flux);
+    scale(&mut features.onset);
+    for band in &mut features.spectrum {
+        scale(band);
+    }
+}
+
 fn envelope(current: f32, target: f32, attack: f32, release: f32, dt: f32) -> f32 {
     let speed = if target > current { attack } else { release };
     let blend = 1.0 - (-speed * dt).exp();
@@ -221,6 +283,23 @@ fn envelope(current: f32, target: f32, attack: f32, release: f32, dt: f32) -> f3
 
 fn paint_scene(canvas: &Canvas, state: &VisualState) {
     let preset = PRESETS[state.preset % PRESETS.len()];
+    draw_app_backdrop(canvas, state, preset);
+    if state.stage_active && state.viewport.is_visible() {
+        let viewport = state.viewport;
+        let mut local = state.clone();
+        local.width = viewport.width;
+        local.height = viewport.height;
+        local.viewport = StageViewport::default();
+        canvas.save();
+        canvas.translate(viewport.x, viewport.y);
+        draw_stage(canvas, &local, preset);
+        canvas.restore();
+    } else {
+        draw_stage(canvas, state, preset);
+    }
+}
+
+fn draw_stage(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
     draw_backdrop(canvas, state, preset);
     match preset.kind {
         VisualKind::ParticleVeil => draw_particle_veil(canvas, state, preset),
@@ -231,6 +310,42 @@ fn paint_scene(canvas: &Canvas, state: &VisualState) {
         VisualKind::StarRiver => draw_star_river(canvas, state, preset),
     }
     draw_transition(canvas, state, preset);
+}
+
+fn draw_app_backdrop(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
+    canvas.fill_rect_linear_gradient(
+        (0.0, 0.0, state.width, state.height),
+        (0.0, 0.0),
+        (state.width, state.height),
+        &[
+            GradientStop::new(0.0, rgba(2, 4, 7, 255)),
+            GradientStop::new(0.58, rgba(4, 6, 11, 255)),
+            GradientStop::new(1.0, rgba(1, 2, 5, 255)),
+        ],
+    );
+    let glow = state.tuning.glow;
+    canvas.fill_rect_radial_gradient(
+        (0.0, 0.0, state.width, state.height),
+        (state.width * 0.55, state.height * 0.42),
+        state.width.min(state.height) * 0.72,
+        &[
+            GradientStop::new(0.0, color(preset.accent, alpha_u8(9.0 * glow))),
+            GradientStop::new(0.42, color(preset.secondary, alpha_u8(5.0 * glow))),
+            GradientStop::new(1.0, color(preset.accent, 0)),
+        ],
+    );
+    for index in 0_u32..72 {
+        let x = hash01(index * 47 + 5) * state.width;
+        let y = hash01(index * 83 + 17) * state.height;
+        let shimmer = (state.elapsed * 0.42 + hash01(index) * 8.0).sin() * 0.5 + 0.5;
+        dot(
+            canvas,
+            x,
+            y,
+            0.55 + shimmer * 0.8,
+            rgba(210, 226, 240, alpha_u8(5.0 + shimmer * 21.0)),
+        );
+    }
 }
 
 fn draw_backdrop(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
@@ -251,14 +366,15 @@ fn draw_backdrop(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
         VisualKind::VinylHalo => (width * 0.56, height * 0.44),
         _ => (width * 0.56, height * 0.42),
     };
-    let radius = width.min(height) * (0.42 + state.features.energy * 0.07);
+    let radius = width.min(height) * (0.48 + state.features.energy * 0.09);
+    let glow = state.tuning.glow;
     canvas.fill_rect_radial_gradient(
         (0.0, 0.0, width, height),
         center,
         radius,
         &[
-            GradientStop::new(0.0, color(preset.accent, 25)),
-            GradientStop::new(0.38, color(preset.secondary, 12)),
+            GradientStop::new(0.0, color(preset.accent, alpha_u8(31.0 * glow))),
+            GradientStop::new(0.38, color(preset.secondary, alpha_u8(16.0 * glow))),
             GradientStop::new(1.0, color(preset.accent, 0)),
         ],
     );
@@ -267,36 +383,116 @@ fn draw_backdrop(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
 fn draw_particle_veil(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
     let width = state.width;
     let height = state.height;
-    let origin_x = width * 0.28;
-    let origin_y = height * 0.20;
-    let field_w = width * 0.56;
-    let field_h = height * 0.48;
-    let cols = 30_u16;
-    let rows = 18_u16;
+    let center_x = width * 0.50;
+    let center_y = height * 0.47;
+    let field_w = width * 0.82;
+    let field_h = height * 0.56;
+    let cols = 34_u16;
+    let rows = 22_u16;
     let pitch = (state.features.pitch_hz / 880.0).clamp(0.0, 1.0);
     let centroid = (state.features.spectral_centroid_hz / 8_000.0).clamp(0.0, 1.0);
+    let depth = state.tuning.depth;
+    let yaw = -0.24 + (state.elapsed * 0.13).sin() * 0.07 + centroid * 0.15;
+    let yaw_cos = yaw.cos();
+    let yaw_sin = yaw.sin();
+
+    // A quiet depth field makes the folded surface read as a volume rather
+    // than a flat equalizer without stealing attention from the UI.
+    for index in 0_u32..150 {
+        let orbit = hash01(index * 53 + 7);
+        let phase = hash01(index * 89 + 19) * std::f32::consts::TAU
+            + state.elapsed * (0.025 + orbit * 0.045);
+        let radius_x = width * (0.16 + orbit * 0.37);
+        let radius_y = height * (0.13 + hash01(index * 31) * 0.27);
+        let x = center_x + phase.cos() * radius_x;
+        let y = center_y + phase.sin() * radius_y;
+        let shimmer = (state.elapsed * 0.8 + hash01(index) * 11.0).sin() * 0.5 + 0.5;
+        dot(
+            canvas,
+            x,
+            y,
+            0.55 + shimmer * 1.15,
+            color(
+                if index % 4 == 0 {
+                    preset.secondary
+                } else {
+                    preset.accent
+                },
+                alpha_u8(9.0 + shimmer * 38.0),
+            ),
+        );
+    }
+
     for row in 0..rows {
         let v = f32::from(row) / f32::from(rows - 1);
         for col in 0..cols {
             let u = f32::from(col) / f32::from(cols - 1);
             let band = spectrum_at(&state.features.spectrum, u);
-            let phase = state.elapsed * (0.65 + pitch * 1.8) + u * 9.0 + v * 4.0;
-            let fold =
-                phase.sin() * (8.0 + state.features.mid * 34.0) * (v * std::f32::consts::PI).sin();
-            let bass_bow = (u * std::f32::consts::TAU).cos() * state.features.bass * 18.0;
-            let x = origin_x + u * field_w + fold * 0.28;
-            let y = origin_y + v * field_h + fold + bass_bow;
+            let phase = state.elapsed * (0.42 + pitch * 0.82) + u * 8.6 + v * 4.8;
+            let edge = (v * std::f32::consts::PI).sin().powf(0.58);
+            let fold = phase.sin() * (0.16 + state.features.mid * 0.58) * edge
+                + ((u + v) * 11.0 - state.elapsed * 0.34).cos()
+                    * (0.05 + state.features.bass * 0.22);
+            let local_x = (u - 0.5) * field_w;
+            let local_y = (v - 0.5) * field_h
+                + (u * std::f32::consts::TAU).cos() * state.features.bass * height * 0.035;
+            let local_z = fold * field_w * 0.24 * depth;
+            let rotated_x = local_x * yaw_cos + local_z * yaw_sin;
+            let rotated_z = -local_x * yaw_sin + local_z * yaw_cos;
+            let perspective = (1.0 / (1.0 - rotated_z / (field_w * 2.2))).clamp(0.76, 1.28);
+            let x = center_x + rotated_x * perspective;
+            let y = center_y + (local_y + rotated_z * 0.13) * perspective;
             let shimmer =
                 (state.elapsed * 1.2 + hash01(u32::from(row) * 97 + u32::from(col))).sin() * 0.5
                     + 0.5;
-            let size = 0.9 + band * 3.2 + state.features.onset * 1.6 + shimmer * 0.55;
-            let tint = if u + centroid * 0.25 > v {
+            let size =
+                (0.72 + band * 2.9 + state.features.onset * 1.45 + shimmer * 0.62) * perspective;
+            let tint = if fold + centroid * 0.18 > 0.08 {
                 preset.accent
             } else {
                 preset.secondary
             };
-            let alpha = alpha_u8(28.0 + band * 128.0 + shimmer * 34.0);
+            let alpha =
+                alpha_u8(24.0 + band * 137.0 + shimmer * 38.0 + perspective.max(1.0) * 12.0);
             dot(canvas, x, y, size, color(tint, alpha));
+        }
+    }
+
+    // Three translucent frequency ribbons tie the particle sculpture to the
+    // live spectrum and echo the flowing visual language of the player shell.
+    for layer in 0_u16..3 {
+        let drive = [
+            state.features.bass,
+            state.features.mid,
+            state.features.treble,
+        ][usize::from(layer)];
+        for index in 0_u16..96 {
+            let u = f32::from(index) / 95.0;
+            let band = spectrum_at(
+                &state.features.spectrum,
+                (u + f32::from(layer) * 0.17).fract(),
+            );
+            let x = width * (0.08 + u * 0.84);
+            let baseline = height * (0.78 + f32::from(layer) * 0.035);
+            let y = baseline
+                + (u * (8.0 + f32::from(layer) * 2.1)
+                    + state.elapsed * (0.36 + f32::from(layer) * 0.11))
+                    .sin()
+                    * (3.0 + drive * 12.0 + band * 6.0);
+            dot(
+                canvas,
+                x,
+                y,
+                0.65 + band * 1.35,
+                color(
+                    if layer == 1 {
+                        preset.secondary
+                    } else {
+                        preset.accent
+                    },
+                    alpha_u8(13.0 + band * 48.0 + drive * 25.0),
+                ),
+            );
         }
     }
 }
@@ -757,6 +953,7 @@ mod tests {
                 },
                 preset,
                 transition: 0.0,
+                ..VisualState::default()
             };
             paint_scene(&canvas, &state);
             canvas.end();
@@ -784,5 +981,20 @@ mod tests {
         smooth_features(&mut visible, &AudioFeatures::default(), 1.0 / 60.0);
         assert!(attacked > 0.15);
         assert!(visible.energy > attacked * 0.85);
+    }
+
+    #[test]
+    fn tuning_is_normalized_to_safe_rendering_ranges() {
+        let tuning = VisualTuning {
+            intensity: 9.0,
+            motion: -2.0,
+            depth: 3.0,
+            glow: 0.0,
+        }
+        .normalized();
+        assert_eq!(tuning.intensity, 1.75);
+        assert_eq!(tuning.motion, 0.35);
+        assert_eq!(tuning.depth, 1.50);
+        assert_eq!(tuning.glow, 0.25);
     }
 }

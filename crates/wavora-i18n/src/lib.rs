@@ -83,6 +83,20 @@ pub enum Key {
     Duration,
     VisualDescription,
     VisualFootnote,
+    VisualPreview,
+    VisualControls,
+    VisualPresets,
+    Live,
+    Listening,
+    WaitingForAudio,
+    Loudness,
+    Pitch,
+    Centroid,
+    Onset,
+    Intensity,
+    Motion,
+    Depth,
+    Glow,
     SettingsDescription,
     DefaultVolume,
     Language,
@@ -160,6 +174,20 @@ const fn english(key: Key) -> &'static str {
         Key::VisualFootnote => {
             "Driven by 32-band PCM analysis, bass/mid/treble, dBFS loudness, pitch, centroid and onset."
         }
+        Key::VisualPreview => "AUDIO-REACTIVE STAGE",
+        Key::VisualControls => "Visual controls",
+        Key::VisualPresets => "Compositions",
+        Key::Live => "LIVE",
+        Key::Listening => "Listening to decoded PCM",
+        Key::WaitingForAudio => "Play a track to wake the stage",
+        Key::Loudness => "Loudness",
+        Key::Pitch => "Pitch",
+        Key::Centroid => "Centroid",
+        Key::Onset => "Onset",
+        Key::Intensity => "Response",
+        Key::Motion => "Motion",
+        Key::Depth => "Depth",
+        Key::Glow => "Glow",
         Key::SettingsDescription => "Playback and visual preferences are stored locally.",
         Key::DefaultVolume => "Default volume",
         Key::Language => "Language",
@@ -225,6 +253,20 @@ const fn chinese(key: Key) -> &'static str {
         Key::VisualFootnote => {
             "由 32 段 PCM 频谱、低中高频、dBFS 响度、音高、频谱质心与瞬态共同驱动。"
         }
+        Key::VisualPreview => "音频响应舞台",
+        Key::VisualControls => "视觉控制",
+        Key::VisualPresets => "构图预设",
+        Key::Live => "实时",
+        Key::Listening => "正在解析 PCM 音频",
+        Key::WaitingForAudio => "播放音乐，唤醒舞台",
+        Key::Loudness => "响度",
+        Key::Pitch => "音高",
+        Key::Centroid => "频谱质心",
+        Key::Onset => "瞬态",
+        Key::Intensity => "响应强度",
+        Key::Motion => "运动速率",
+        Key::Depth => "空间纵深",
+        Key::Glow => "辉光",
         Key::SettingsDescription => "播放与视觉偏好只保存在本机。",
         Key::DefaultVolume => "默认音量",
         Key::Language => "语言",
@@ -255,6 +297,87 @@ const fn chinese(key: Key) -> &'static str {
     }
 }
 
+/// Localized display copy for a built-in visual composition.
+///
+/// Visual rendering deliberately stays language-neutral; UI copy lives here
+/// so switching languages never leaves a half-translated preset row behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisualPresetText {
+    pub name: &'static str,
+    pub subtitle: &'static str,
+    pub response: &'static str,
+}
+
+#[must_use]
+pub const fn visual_preset_text(language: Language, index: usize) -> VisualPresetText {
+    match language {
+        Language::English => match index {
+            0 => VisualPresetText {
+                name: "Particle Veil",
+                subtitle: "A folded particle fabric",
+                response: "Pitch · mids · spectral centroid",
+            },
+            1 => VisualPresetText {
+                name: "Pulse Tunnel",
+                subtitle: "A low-frequency depth tunnel",
+                response: "Bass · transients · loudness",
+            },
+            2 => VisualPresetText {
+                name: "Orbital Core",
+                subtitle: "Frequency in orbit",
+                response: "Dominant frequency · treble · energy",
+            },
+            3 => VisualPresetText {
+                name: "Spectral Void",
+                subtitle: "A transient eclipse",
+                response: "Spectrum · peak · transients",
+            },
+            4 => VisualPresetText {
+                name: "Vinyl Halo",
+                subtitle: "Loudness etched into grooves",
+                response: "Loudness · bass · spectrum",
+            },
+            _ => VisualPresetText {
+                name: "Star River",
+                subtitle: "A three-band flow field",
+                response: "Bass · mids · treble",
+            },
+        },
+        Language::SimplifiedChinese => match index {
+            0 => VisualPresetText {
+                name: "粒子帷幕",
+                subtitle: "折叠的粒子织面",
+                response: "音高 · 中频 · 频谱质心",
+            },
+            1 => VisualPresetText {
+                name: "脉冲隧道",
+                subtitle: "低频塑造纵深",
+                response: "低频 · 瞬态 · 响度",
+            },
+            2 => VisualPresetText {
+                name: "轨道核心",
+                subtitle: "让频率进入轨道",
+                response: "主频 · 高频 · 能量",
+            },
+            3 => VisualPresetText {
+                name: "频谱虚空",
+                subtitle: "瞬态掠过日蚀",
+                response: "频谱 · 峰值 · 瞬态",
+            },
+            4 => VisualPresetText {
+                name: "黑胶光环",
+                subtitle: "把响度刻进声槽",
+                response: "响度 · 低频 · 频谱",
+            },
+            _ => VisualPresetText {
+                name: "星河",
+                subtitle: "三频交织的流场",
+                response: "低频 · 中频 · 高频",
+            },
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +400,29 @@ mod tests {
     fn catalog_has_both_languages() {
         assert_eq!(text(Language::English, Key::Library), "Library");
         assert_eq!(text(Language::SimplifiedChinese, Key::Library), "音乐库");
+    }
+
+    #[test]
+    fn visual_presets_are_fully_localized() {
+        for index in 0..6 {
+            let english = visual_preset_text(Language::English, index);
+            assert!(
+                !english
+                    .name
+                    .chars()
+                    .chain(english.subtitle.chars())
+                    .chain(english.response.chars())
+                    .any(|character| ('\u{4e00}'..='\u{9fff}').contains(&character))
+            );
+            let chinese = visual_preset_text(Language::SimplifiedChinese, index);
+            assert!(
+                chinese
+                    .name
+                    .chars()
+                    .chain(chinese.subtitle.chars())
+                    .chain(chinese.response.chars())
+                    .any(|character| ('\u{4e00}'..='\u{9fff}').contains(&character))
+            );
+        }
     }
 }

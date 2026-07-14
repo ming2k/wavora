@@ -11,7 +11,7 @@ use wavora_media::{
     AudioController, AudioEvent, AudioFeatures, LibraryEvent, LibraryScanner, file_uri_to_path,
     is_supported_audio, path_to_file_uri,
 };
-use wavora_visuals::{PRESETS, SharedVisualState, shared_state};
+use wavora_visuals::{PRESETS, SharedVisualState, VisualTuning, shared_state};
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -41,6 +41,7 @@ pub struct App {
     pub seek_ratio: f32,
     pub volume: f32,
     pub preset: usize,
+    pub visual_tuning: VisualTuning,
     pub view: View,
     pub search: TextBuf,
     pub scanning: bool,
@@ -54,6 +55,7 @@ pub struct App {
     visuals: SharedVisualState,
     loaded_uri: Option<String>,
     autoplay_uri: Option<String>,
+    preset_override: bool,
     dirty_config: bool,
     config_save_due: Instant,
     last_frame: Instant,
@@ -105,6 +107,13 @@ impl App {
         }
         let volume = config.volume;
         let preset = config.visual_preset;
+        let visual_tuning = VisualTuning {
+            intensity: config.visual_intensity,
+            motion: config.visual_motion,
+            depth: config.visual_depth,
+            glow: config.visual_glow,
+        }
+        .normalized();
         let language = config.language.resolve();
         let view = if config.library_roots.is_empty() {
             View::Home
@@ -120,6 +129,7 @@ impl App {
             seek_ratio: 0.0,
             volume,
             preset,
+            visual_tuning,
             view,
             search: TextBuf::new(256, ""),
             scanning: false,
@@ -133,6 +143,7 @@ impl App {
             visuals,
             loaded_uri: None,
             autoplay_uri,
+            preset_override: false,
             dirty_config,
             config_save_due: Instant::now() + Duration::from_millis(350),
             last_frame: Instant::now(),
@@ -165,6 +176,8 @@ impl App {
                 self.seek_ratio,
                 self.preset,
                 self.audio_features,
+                self.visual_tuning,
+                self.view == View::Visuals,
             );
         }
         if self.dirty_config && now >= self.config_save_due {
@@ -403,8 +416,24 @@ impl App {
 
     pub fn set_preset(&mut self, preset: usize) {
         self.preset = preset % PRESETS.len();
+        self.preset_override = false;
         self.config.visual_preset = self.preset;
         self.mark_config_dirty();
+    }
+
+    pub fn apply_visual_tuning(&mut self) {
+        self.visual_tuning = self.visual_tuning.normalized();
+        self.config.visual_intensity = self.visual_tuning.intensity;
+        self.config.visual_motion = self.visual_tuning.motion;
+        self.config.visual_depth = self.visual_tuning.depth;
+        self.config.visual_glow = self.visual_tuning.glow;
+        self.mark_config_dirty();
+    }
+
+    pub fn set_visual_viewport(&self, viewport: Option<(f32, f32, f32, f32)>) {
+        if let Ok(mut visual) = self.visuals.write() {
+            visual.set_stage_viewport(viewport);
+        }
     }
 
     pub fn toggle_current_favorite(&mut self) {
@@ -532,7 +561,13 @@ impl App {
 
     fn save_config(&mut self) {
         self.config.volume = self.volume;
-        self.config.visual_preset = self.preset;
+        if !self.preset_override {
+            self.config.visual_preset = self.preset;
+        }
+        self.config.visual_intensity = self.visual_tuning.intensity;
+        self.config.visual_motion = self.visual_tuning.motion;
+        self.config.visual_depth = self.visual_tuning.depth;
+        self.config.visual_glow = self.visual_tuning.glow;
         let discovered = self
             .tracks
             .iter()
@@ -578,9 +613,18 @@ pub fn run() -> Result<(), AppError> {
     let store = ConfigStore::discover()?;
     let (config, recovered_config) = store.load_resilient()?;
     let paths = command_line_paths();
+    let requested_view = command_line_view();
+    let requested_preset = command_line_preset();
     let visuals = shared_state(config.visual_preset);
     let paint_visuals = visuals.clone();
     let mut app = App::new(config, store, &paths, visuals)?;
+    if let Some(view) = requested_view {
+        app.view = view;
+    }
+    if let Some(preset) = requested_preset {
+        app.preset = preset;
+        app.preset_override = true;
+    }
     if let Some(backup) = recovered_config {
         app.set_toast(
             format!(
@@ -613,6 +657,20 @@ fn command_line_paths() -> Vec<PathBuf> {
         .map(argument_to_path)
         .filter(|path| path.exists())
         .collect()
+}
+
+fn command_line_view() -> Option<View> {
+    std::env::args().find_map(|argument| match argument.as_str() {
+        "--visuals" => Some(View::Visuals),
+        "--library" => Some(View::Library),
+        _ => None,
+    })
+}
+
+fn command_line_preset() -> Option<usize> {
+    std::env::args()
+        .find_map(|argument| argument.strip_prefix("--preset=")?.parse::<usize>().ok())
+        .map(|preset| preset % PRESETS.len())
 }
 
 fn argument_to_path(argument: std::ffi::OsString) -> PathBuf {

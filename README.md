@@ -38,7 +38,11 @@ cargo run --release
 ```bash
 cargo run --release -- ~/Music
 cargo run --release -- ~/Music/example.flac
+cargo run --release -- --visuals --preset=0
 ```
+
+`--visuals` 与 `--library` 可用于启动时直接进入视觉舞台或音乐库；`--preset=0..5`
+可临时预览指定视觉预设，不会覆盖已保存的选择。
 
 本地安装（默认安装到 `~/.local`）会同时放置桌面启动器、图标、AppStream 元数据和
 Optics 运行库：
