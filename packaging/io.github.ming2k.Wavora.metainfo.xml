@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.ming2k.Wavora</id>
+  <name>Wavora</name>
+  <summary>An immersive local music player</summary>
+  <summary xml:lang="zh-CN">沉浸式本地多媒体音乐播放器</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.ming2k">
+    <name>Wavora contributors</name>
+  </developer>
+  <description>
+    <p>
+      Wavora combines native local audio playback with a restrained,
+      audio-reactive visual stage. It scans local folders, validates media,
+      remembers favorites, and never requires an online account.
+    </p>
+    <p xml:lang="zh-CN">
+      Wavora 将原生本地音频播放与克制的实时音频视觉舞台结合，支持音乐文件夹扫描、
+      媒体校验、收藏与本机偏好持久化，不需要在线账号。
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.ming2k.Wavora.desktop</launchable>
+  <provides>
+    <binary>wavora</binary>
+  </provides>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Player</category>
+  </categories>
+  <url type="homepage">https://github.com/ming2k/wavora</url>
+  <releases>
+    <release version="0.2.0" date="2026-07-14"/>
+    <release version="0.1.0" date="2026-07-14"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

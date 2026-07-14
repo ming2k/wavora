@@ -1,0 +1,279 @@
+//! Small, typed translation catalog for Wavora.
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LanguagePreference {
+    #[default]
+    System,
+    English,
+    SimplifiedChinese,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    English,
+    SimplifiedChinese,
+}
+
+impl LanguagePreference {
+    #[must_use]
+    pub fn resolve(self) -> Language {
+        match self {
+            Self::System => system_language(),
+            Self::English => Language::English,
+            Self::SimplifiedChinese => Language::SimplifiedChinese,
+        }
+    }
+}
+
+#[must_use]
+pub fn system_language() -> Language {
+    ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find(|value| !value.trim().is_empty())
+        .map_or(Language::English, |locale| language_from_locale(&locale))
+}
+
+#[must_use]
+pub fn language_from_locale(locale: &str) -> Language {
+    // GNU `LANGUAGE` may contain an ordered colon-separated fallback list.
+    let primary = locale.split(':').next().unwrap_or(locale);
+    let normalized = primary.trim().to_ascii_lowercase().replace('_', "-");
+    if normalized == "zh" || normalized.starts_with("zh-") {
+        Language::SimplifiedChinese
+    } else {
+        Language::English
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    AppSubtitle,
+    YourSpace,
+    Now,
+    Library,
+    Favorites,
+    VisualStage,
+    Collection,
+    LocalTracks,
+    FavoriteTracks,
+    Scanning,
+    Search,
+    AddFile,
+    AddFolder,
+    Settings,
+    ImmersiveListening,
+    SoundInMotion,
+    EmptyHomeDescription,
+    AddMusicFolder,
+    LibraryCard,
+    VisualCard,
+    EngineCard,
+    LocalArchive,
+    SystemDecode,
+    LocalLibrary,
+    Tracks,
+    EmptyLibrary,
+    Title,
+    Artist,
+    Album,
+    Duration,
+    VisualDescription,
+    VisualFootnote,
+    SettingsDescription,
+    DefaultVolume,
+    Language,
+    FollowSystem,
+    English,
+    SimplifiedChinese,
+    ConfigFile,
+    MusicFolders,
+    NoMusicFolder,
+    SupportedFormats,
+    UpNext,
+    Queue,
+    EmptyQueue,
+    NothingPlaying,
+    AddLocalTrack,
+    Volume,
+    RestoreConfig,
+    PlaybackFailed,
+    SaveSettingsFailed,
+    UnsupportedFile,
+    InvalidFilePath,
+    InvalidFolder,
+    InvalidFolderPath,
+    AddedTracks,
+    ScanSummary,
+    Favorited,
+    Unfavorited,
+}
+
+#[must_use]
+pub const fn text(language: Language, key: Key) -> &'static str {
+    match language {
+        Language::English => english(key),
+        Language::SimplifiedChinese => chinese(key),
+    }
+}
+
+const fn english(key: Key) -> &'static str {
+    match key {
+        Key::AppSubtitle => "LOCAL AUDIO SPACE",
+        Key::YourSpace => "YOUR SPACE",
+        Key::Now => "Now playing",
+        Key::Library => "Library",
+        Key::Favorites => "Favorites",
+        Key::VisualStage => "Visual stage",
+        Key::Collection => "COLLECTION",
+        Key::LocalTracks => "local tracks",
+        Key::FavoriteTracks => "favorites",
+        Key::Scanning => "Reading media metadata…",
+        Key::Search => "Search music",
+        Key::AddFile => "Add music file",
+        Key::AddFolder => "Add music folder",
+        Key::Settings => "Settings",
+        Key::ImmersiveListening => "IMMERSIVE LOCAL LISTENING",
+        Key::SoundInMotion => "Your sound, in motion.",
+        Key::EmptyHomeDescription => {
+            "Add a local music folder to begin building your private listening space."
+        }
+        Key::AddMusicFolder => "+ Add music folder",
+        Key::LibraryCard => "LIBRARY",
+        Key::VisualCard => "VISUAL",
+        Key::EngineCard => "ENGINE",
+        Key::LocalArchive => "Your local sound archive",
+        Key::SystemDecode => "Built-in decoding · native output",
+        Key::LocalLibrary => "Local library",
+        Key::Tracks => "TRACKS",
+        Key::EmptyLibrary => "No playable tracks yet. Add a music folder to get started.",
+        Key::Title => "Title",
+        Key::Artist => "Artist",
+        Key::Album => "Album",
+        Key::Duration => "Time",
+        Key::VisualDescription => {
+            "Colour is music's second emotional layer. Switching a preset never interrupts playback."
+        }
+        Key::VisualFootnote => {
+            "The stage reacts to decoded PCM energy and sixteen frequency bands."
+        }
+        Key::SettingsDescription => "Playback and visual preferences are stored locally.",
+        Key::DefaultVolume => "Default volume",
+        Key::Language => "Language",
+        Key::FollowSystem => "Follow system",
+        Key::English => "English",
+        Key::SimplifiedChinese => "简体中文",
+        Key::ConfigFile => "Configuration",
+        Key::MusicFolders => "Music folders",
+        Key::NoMusicFolder => "None added",
+        Key::SupportedFormats => "Built-in: FLAC · MP3 · M4A/AAC · Ogg Vorbis · WAV",
+        Key::UpNext => "Up next",
+        Key::Queue => "QUEUE",
+        Key::EmptyQueue => "The queue is empty",
+        Key::NothingPlaying => "Nothing playing",
+        Key::AddLocalTrack => "Add a local track to begin",
+        Key::Volume => "VOLUME",
+        Key::RestoreConfig => "Configuration recovered; the invalid file was saved at",
+        Key::PlaybackFailed => "Playback failed",
+        Key::SaveSettingsFailed => "Could not save settings",
+        Key::UnsupportedFile => "That file format is not supported",
+        Key::InvalidFilePath => "The selected file path could not be read",
+        Key::InvalidFolder => "The selected location is not a folder",
+        Key::InvalidFolderPath => "The selected folder path could not be read",
+        Key::AddedTracks => "tracks added",
+        Key::ScanSummary => "files could not be decoded and were skipped",
+        Key::Favorited => "Added to favorites",
+        Key::Unfavorited => "Removed from favorites",
+    }
+}
+
+const fn chinese(key: Key) -> &'static str {
+    match key {
+        Key::AppSubtitle => "本地声场",
+        Key::YourSpace => "你的空间",
+        Key::Now => "此刻",
+        Key::Library | Key::LibraryCard => "音乐库",
+        Key::Favorites => "我喜欢",
+        Key::VisualStage => "视觉舞台",
+        Key::Collection => "收藏概览",
+        Key::LocalTracks => "首本地曲目",
+        Key::FavoriteTracks => "首已收藏",
+        Key::Scanning => "正在读取媒体信息…",
+        Key::Search => "搜索音乐",
+        Key::AddFile => "添加音乐文件",
+        Key::AddFolder => "添加音乐文件夹",
+        Key::Settings => "设置",
+        Key::ImmersiveListening => "沉浸式本地聆听",
+        Key::SoundInMotion => "让声音，流动起来。",
+        Key::EmptyHomeDescription => "添加本地音乐文件夹，开始构建只属于你的聆听空间。",
+        Key::AddMusicFolder => "＋ 添加音乐文件夹",
+        Key::VisualCard => "视觉",
+        Key::EngineCard => "引擎",
+        Key::LocalArchive => "你的本地声音档案",
+        Key::SystemDecode => "内置解码 · 原生输出",
+        Key::LocalLibrary => "本地音乐库",
+        Key::Tracks => "首曲目",
+        Key::EmptyLibrary => "还没有可播放的曲目。添加音乐文件夹即可开始。",
+        Key::Title => "标题",
+        Key::Artist => "艺人",
+        Key::Album => "专辑",
+        Key::Duration => "时长",
+        Key::VisualDescription => "颜色是音乐的第二层情绪，切换视觉不会中断播放。",
+        Key::VisualFootnote => "舞台由解码后的 PCM 能量与十六段频谱实时驱动。",
+        Key::SettingsDescription => "播放与视觉偏好只保存在本机。",
+        Key::DefaultVolume => "默认音量",
+        Key::Language => "语言",
+        Key::FollowSystem => "跟随系统",
+        Key::English => "English",
+        Key::SimplifiedChinese => "简体中文",
+        Key::ConfigFile => "配置文件",
+        Key::MusicFolders => "音乐文件夹",
+        Key::NoMusicFolder => "尚未添加",
+        Key::SupportedFormats => "内置支持：FLAC · MP3 · M4A/AAC · Ogg Vorbis · WAV",
+        Key::UpNext => "接下来播放",
+        Key::Queue => "队列",
+        Key::EmptyQueue => "队列为空",
+        Key::NothingPlaying => "没有正在播放的音乐",
+        Key::AddLocalTrack => "添加本地曲目开始",
+        Key::Volume => "音量",
+        Key::RestoreConfig => "配置已恢复，损坏文件保存在",
+        Key::PlaybackFailed => "播放失败",
+        Key::SaveSettingsFailed => "保存设置失败",
+        Key::UnsupportedFile => "暂不支持所选文件格式",
+        Key::InvalidFilePath => "无法读取所选文件路径",
+        Key::InvalidFolder => "所选位置不是文件夹",
+        Key::InvalidFolderPath => "无法读取所选文件夹路径",
+        Key::AddedTracks => "首曲目已加入",
+        Key::ScanSummary => "个文件无法解码，已跳过",
+        Key::Favorited => "已收藏",
+        Key::Unfavorited => "已取消收藏",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_chinese_locale_variants() {
+        assert_eq!(
+            language_from_locale("zh_CN.UTF-8"),
+            Language::SimplifiedChinese
+        );
+        assert_eq!(language_from_locale("zh-Hans"), Language::SimplifiedChinese);
+        assert_eq!(
+            language_from_locale("zh_CN:en_US"),
+            Language::SimplifiedChinese
+        );
+        assert_eq!(language_from_locale("en_US.UTF-8"), Language::English);
+    }
+
+    #[test]
+    fn catalog_has_both_languages() {
+        assert_eq!(text(Language::English, Key::Library), "Library");
+        assert_eq!(text(Language::SimplifiedChinese, Key::Library), "音乐库");
+    }
+}

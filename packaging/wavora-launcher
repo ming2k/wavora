@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SELF="$(readlink -f -- "$0")"
+PREFIX="$(cd -- "$(dirname -- "$SELF")/.." && pwd)"
+export LD_LIBRARY_PATH="$PREFIX/lib/wavora:${LD_LIBRARY_PATH:-}"
+exec "$PREFIX/libexec/wavora/wavora" "$@"

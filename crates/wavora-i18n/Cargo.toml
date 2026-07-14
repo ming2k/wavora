@@ -1,0 +1,18 @@
+[package]
+name = "wavora-i18n"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "System-locale selection and translations for Wavora"
+
+[dependencies]
+serde.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

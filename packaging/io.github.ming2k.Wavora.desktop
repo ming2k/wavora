@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Wavora
+Name[zh_CN]=Wavora 本地音乐空间
+Comment=An immersive local music player
+Comment[zh_CN]=沉浸式本地多媒体音乐播放器
+Exec=wavora %F
+Icon=io.github.ming2k.Wavora
+Terminal=false
+StartupNotify=true
+Categories=AudioVideo;Audio;Player;
+MimeType=audio/aac;audio/flac;audio/mp4;audio/mpeg;audio/ogg;audio/opus;audio/wav;audio/x-m4a;
+Keywords=Music;Audio;Player;Local;
+Keywords[zh_CN]=音乐;音频;播放器;本地;
