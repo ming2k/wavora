@@ -11,13 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use thiserror::Error;
+use wavora_audio_analysis::{Analyzer, AudioFeatures};
 use wavora_core::PlaybackState;
 
-pub const SPECTRUM_BANDS: usize = 16;
-const ANALYSIS_FREQUENCIES: [f32; SPECTRUM_BANDS] = [
-    55.0, 75.0, 100.0, 135.0, 180.0, 240.0, 320.0, 430.0, 575.0, 770.0, 1_030.0, 1_380.0, 1_850.0,
-    2_480.0, 3_100.0, 3_700.0,
-];
 const FRAMES_PER_BUFFER: usize = 2_048;
 
 #[derive(Debug)]
@@ -48,15 +44,9 @@ pub enum AudioError {
 
 #[derive(Debug, Clone)]
 pub enum AudioEvent {
-    Position {
-        position_ms: u64,
-        duration_ms: u64,
-    },
+    Position { position_ms: u64, duration_ms: u64 },
     State(PlaybackState),
-    Analysis {
-        energy: f32,
-        bands: [f32; SPECTRUM_BANDS],
-    },
+    Analysis(AudioFeatures),
     EndOfStream,
     Error(AudioError),
 }
@@ -242,6 +232,7 @@ type FileDecoder = Decoder<BufReader<File>>;
 
 struct DecodeState {
     decoder: FileDecoder,
+    analyzer: Analyzer,
     channels: usize,
     sample_rate: u32,
     next_frame: u64,
@@ -267,6 +258,7 @@ impl Playback {
             .unwrap_or_default();
         let state = Arc::new(Mutex::new(DecodeState {
             decoder,
+            analyzer: Analyzer::new(sample_rate, channels),
             channels,
             sample_rate,
             next_frame: 0,
@@ -451,12 +443,11 @@ fn push_decoded_buffer(
     state.next_frame = state
         .next_frame
         .saturating_add(u64::try_from(frame_count).unwrap_or_default());
-    let channels = state.channels;
     let sample_rate = state.sample_rate;
+    let features = state.analyzer.analyze(&samples);
     drop(state);
 
-    let (energy, bands) = analyse_samples(&samples, channels, sample_rate as f32);
-    let _ = events.try_send(AudioEvent::Analysis { energy, bands });
+    let _ = events.try_send(AudioEvent::Analysis(features));
     let mut bytes = Vec::with_capacity(samples.len() * 4);
     for sample in samples {
         bytes.extend_from_slice(&sample.to_ne_bytes());
@@ -483,56 +474,11 @@ fn seek_decoder(state: &Mutex<DecodeState>, offset_ns: u64) -> bool {
             state.next_frame =
                 offset_ns.saturating_mul(u64::from(state.sample_rate)) / 1_000_000_000;
             state.eos = false;
+            state.analyzer.reset();
             true
         }
         Err(_) => false,
     }
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn analyse_samples(
-    samples: &[f32],
-    channels: usize,
-    sample_rate: f32,
-) -> (f32, [f32; SPECTRUM_BANDS]) {
-    let channels = channels.max(1);
-    let frame_count = samples.len() / channels;
-    if frame_count == 0 || !sample_rate.is_finite() || sample_rate <= 0.0 {
-        return (0.0, [0.0; SPECTRUM_BANDS]);
-    }
-    let mean_square = samples
-        .iter()
-        .copied()
-        .filter(|sample| sample.is_finite())
-        .map(|sample| sample * sample)
-        .sum::<f32>()
-        / samples.len() as f32;
-    let energy = normalize_magnitude(mean_square.sqrt());
-    let mut bands = [0.0; SPECTRUM_BANDS];
-    for (band, frequency) in bands.iter_mut().zip(ANALYSIS_FREQUENCIES) {
-        let omega = std::f32::consts::TAU * frequency / sample_rate;
-        let coefficient = 2.0 * omega.cos();
-        let mut previous = 0.0_f32;
-        let mut before_previous = 0.0_f32;
-        for sample in samples.iter().step_by(channels).copied() {
-            let sample = if sample.is_finite() { sample } else { 0.0 };
-            let current = coefficient.mul_add(previous, sample) - before_previous;
-            before_previous = previous;
-            previous = current;
-        }
-        let power = previous.mul_add(
-            previous,
-            before_previous * before_previous - coefficient * previous * before_previous,
-        );
-        let magnitude = power.max(0.0).sqrt() / frame_count as f32;
-        *band = normalize_magnitude(magnitude * 2.0);
-    }
-    (energy, bands)
-}
-
-fn normalize_magnitude(magnitude: f32) -> f32 {
-    let decibels = 20.0 * magnitude.max(0.000_01).log10();
-    ((decibels + 60.0) / 54.0).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -540,27 +486,6 @@ mod tests {
     use super::*;
     use crate::path_to_file_uri;
     use std::time::Instant;
-
-    #[test]
-    #[allow(clippy::cast_precision_loss)]
-    fn pcm_analysis_distinguishes_silence_and_signal() {
-        let silence = vec![0.0_f32; 8_000];
-        let (silent_energy, silent_bands) = analyse_samples(&silence, 1, 8_000.0);
-        assert!(silent_energy.abs() < f32::EPSILON);
-        assert!(silent_bands.iter().all(|band| band.abs() < f32::EPSILON));
-
-        let tone = (0..8_000)
-            .map(|index| (std::f32::consts::TAU * 430.0 * index as f32 / 8_000.0).sin() * 0.5)
-            .collect::<Vec<_>>();
-        let (tone_energy, tone_bands) = analyse_samples(&tone, 1, 8_000.0);
-        assert!(tone_energy > 0.7);
-        let strongest = tone_bands
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1))
-            .map(|(index, _)| index);
-        assert_eq!(strongest, Some(7));
-    }
 
     #[test]
     fn controller_decodes_plays_and_analyses_wav_without_gstreamer_decoder_plugins() {
@@ -582,7 +507,7 @@ mod tests {
                 seen.push(format!("{event:?}"));
                 match event {
                     AudioEvent::State(PlaybackState::Playing) => playing = true,
-                    AudioEvent::Analysis { energy, .. } if energy > 0.4 => analysed = true,
+                    AudioEvent::Analysis(features) if features.energy > 0.4 => analysed = true,
                     AudioEvent::EndOfStream => reached_eos = true,
                     AudioEvent::Error(error) => panic!("playback failed: {error}"),
                     _ => {}

@@ -41,7 +41,7 @@ impl AppConfig {
     pub fn normalize(&mut self) {
         self.version = CONFIG_VERSION;
         self.volume = self.volume.clamp(0.0, 1.0);
-        self.visual_preset %= crate::visuals::PRESETS.len();
+        self.visual_preset %= wavora_visuals::PRESETS.len();
         self.library_roots.sort();
         self.library_roots.dedup();
         let mut seen_recent = HashSet::new();

@@ -1,5 +1,4 @@
 use crate::config::{AppConfig, ConfigError, ConfigStore};
-use crate::visuals::{PRESETS, SharedVisualState, shared_state};
 use iris::{Application, Config, Input, TextBuf};
 use std::collections::HashSet;
 use std::io;
@@ -9,9 +8,10 @@ use thiserror::Error;
 use wavora_core::{PlaybackState, Track};
 use wavora_i18n::{Key, Language, LanguagePreference, text};
 use wavora_media::{
-    AudioController, AudioEvent, LibraryEvent, LibraryScanner, SPECTRUM_BANDS, file_uri_to_path,
+    AudioController, AudioEvent, AudioFeatures, LibraryEvent, LibraryScanner, file_uri_to_path,
     is_supported_audio, path_to_file_uri,
 };
+use wavora_visuals::{PRESETS, SharedVisualState, shared_state};
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -45,8 +45,7 @@ pub struct App {
     pub search: TextBuf,
     pub scanning: bool,
     language: Language,
-    audio_energy: f32,
-    spectrum: [f32; SPECTRUM_BANDS],
+    audio_features: AudioFeatures,
     active_scans: usize,
     config: AppConfig,
     config_store: ConfigStore,
@@ -125,8 +124,7 @@ impl App {
             search: TextBuf::new(256, ""),
             scanning: false,
             language,
-            audio_energy: 0.0,
-            spectrum: [0.0; SPECTRUM_BANDS],
+            audio_features: AudioFeatures::default(),
             active_scans: 0,
             config,
             config_store,
@@ -159,29 +157,15 @@ impl App {
         self.last_frame = now;
         let raw = input.as_raw();
         if let Ok(mut visual) = self.visuals.write() {
-            visual.width = raw.display_size.x;
-            visual.height = raw.display_size.y;
-            visual.elapsed += dt;
-            visual.playing = self.playback_state.is_playing();
-            visual.position_ratio = self.seek_ratio;
-            visual.preset = self.preset;
-            let target_energy = if visual.playing {
-                self.audio_energy
-            } else {
-                0.0
-            };
-            let energy_speed = if target_energy > visual.energy {
-                0.42
-            } else {
-                0.12
-            };
-            visual.energy += (target_energy - visual.energy) * energy_speed;
-            let playing = visual.playing;
-            for (visible, target) in visual.spectrum.iter_mut().zip(self.spectrum) {
-                let target = if playing { target } else { 0.0 };
-                let speed = if target > *visible { 0.48 } else { 0.14 };
-                *visible += (target - *visible) * speed;
-            }
+            visual.update(
+                dt,
+                raw.display_size.x,
+                raw.display_size.y,
+                self.playback_state.is_playing(),
+                self.seek_ratio,
+                self.preset,
+                self.audio_features,
+            );
         }
         if self.dirty_config && now >= self.config_save_due {
             self.save_config();
@@ -281,10 +265,7 @@ impl App {
                 };
             }
             AudioEvent::State(state) => self.playback_state = state,
-            AudioEvent::Analysis { energy, bands } => {
-                self.audio_energy = energy;
-                self.spectrum = bands;
-            }
+            AudioEvent::Analysis(features) => self.audio_features = features,
             AudioEvent::EndOfStream => self.next(),
             AudioEvent::Error(error) => {
                 self.playback_state = PlaybackState::Stopped;
@@ -458,6 +439,15 @@ impl App {
     }
 
     #[must_use]
+    pub fn live_audio_features(&self) -> AudioFeatures {
+        if self.playback_state.is_playing() {
+            self.audio_features
+        } else {
+            AudioFeatures::default()
+        }
+    }
+
+    #[must_use]
     pub fn visible_track_count(&self, favorites_only: bool) -> usize {
         self.visible_track_indices(favorites_only).len()
     }
@@ -612,7 +602,7 @@ pub fn run() -> Result<(), AppError> {
             let size = input.as_raw().display_size;
             crate::ui::build(&mut app, frame, size.x, size.y);
         },
-        Some(move |host| crate::visuals::paint(host, &paint_visuals)),
+        Some(move |host| wavora_visuals::paint(host, &paint_visuals)),
     )?;
     Ok(())
 }

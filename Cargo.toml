@@ -1,9 +1,11 @@
 [workspace]
 members = [
     ".",
+    "crates/wavora-audio-analysis",
     "crates/wavora-core",
     "crates/wavora-i18n",
     "crates/wavora-media",
+    "crates/wavora-visuals",
 ]
 resolver = "3"
 
@@ -16,12 +18,16 @@ repository = "https://github.com/ming2k/wavora"
 
 [workspace.dependencies]
 crossbeam-channel = "0.5.15"
+flux = { path = "../optics/bindings/flux-rs/crates/flux" }
+iris = { path = "../optics/bindings/iris-rs/crates/iris" }
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 walkdir = "2.5.0"
+wavora-audio-analysis = { path = "crates/wavora-audio-analysis" }
 wavora-core = { path = "crates/wavora-core" }
 wavora-i18n = { path = "crates/wavora-i18n" }
 wavora-media = { path = "crates/wavora-media" }
+wavora-visuals = { path = "crates/wavora-visuals" }
 
 [package]
 name = "wavora"
@@ -34,14 +40,14 @@ repository.workspace = true
 
 [dependencies]
 directories = "6.0.0"
-flux = { path = "../optics/bindings/flux-rs/crates/flux" }
-iris = { path = "../optics/bindings/iris-rs/crates/iris" }
+iris.workspace = true
 serde.workspace = true
 serde_json = "1.0.149"
 thiserror.workspace = true
 wavora-core.workspace = true
 wavora-i18n.workspace = true
 wavora-media.workspace = true
+wavora-visuals.workspace = true
 
 [profile.release]
 lto = "thin"

@@ -6,9 +6,10 @@ Wavora 沿用 Termus 已验证过的边界思想，但以 Rust channel 和 Optic
 ```text
 Iris main thread
   ├─ Lens UI / input / app state
-  ├─ Flux paint callback (visual state snapshot)
+  ├─ wavora-visuals ──> Flux paint callback (visual state snapshot)
   ├─ commands ──> audio worker ──> Rodio/Symphonia decoder
-  │                              ├─ PCM analysis ──> energy + 16 bands
+  │                              ├─ wavora-audio-analysis
+  │                              │    └─ PCM ──> 32 bands + pitch/loudness/onset
   │                              └─ GStreamer appsrc ──> native sound server
   └─ commands ──> library worker ──> filesystem + decoder validation
 ```
@@ -20,17 +21,23 @@ wavora (binary + app)
   ├─ wavora-core
   ├─ wavora-i18n
   ├─ wavora-media ──> wavora-core
+  │                └─ wavora-audio-analysis
+  ├─ wavora-visuals ──> wavora-audio-analysis
+  │                  └─ Optics Iris / Flux
   └─ Optics Iris / Lens / Flux
 
 wavora-core    Track、PlaybackState 与纯格式化逻辑
+wavora-audio-analysis  与播放后端无关的 PCM 特征帧：频谱、音高、响度、三频、瞬态
 wavora-i18n    系统 locale 解析、语言偏好与类型化文案表
-wavora-media   文件 URI、异步扫描、内置解码、PCM 分析与原生输出
-wavora         应用状态、配置持久化、UI 与视觉编排
+wavora-media   文件 URI、异步扫描、内置解码、分析调度与原生输出
+wavora-visuals 六套独立构图、音频响应包络、预设转场与 Flux 绘制
+wavora         应用状态、配置持久化与 UI 编排
 ```
 
 - UI 不拥有解码器或扫描器。
 - 音频线程不触碰 Lens / Flux。
-- Flux paint callback 只读一份轻量视觉快照，不锁住 App 状态。
+- Flux paint callback 只读一份轻量视觉快照，不锁住 App 状态；视觉 crate 不依赖媒体层。
+- 音频分析 crate 不依赖解码器、GStreamer 或 UI；seek 时清空瞬态历史，避免伪鼓点。
 - 文件扫描使用可取消的流式遍历，并在工作线程中验证解码能力、读取真实时长。
 - 配置使用同目录临时文件 + rename 原子替换。
 - 播放器由 Symphonia/Rodio 解码为 `f32` PCM；GStreamer 只负责格式转换、重采样、

@@ -1139,7 +1139,6 @@ name = "wavora"
 version = "0.2.0"
 dependencies = [
  "directories",
- "flux",
  "iris",
  "serde",
  "serde_json",
@@ -1147,7 +1146,12 @@ dependencies = [
  "wavora-core",
  "wavora-i18n",
  "wavora-media",
+ "wavora-visuals",
 ]
+
+[[package]]
+name = "wavora-audio-analysis"
+version = "0.2.0"
 
 [[package]]
 name = "wavora-core"
@@ -1173,7 +1177,17 @@ dependencies = [
  "rodio",
  "thiserror",
  "walkdir",
+ "wavora-audio-analysis",
  "wavora-core",
+]
+
+[[package]]
+name = "wavora-visuals"
+version = "0.2.0"
+dependencies = [
+ "flux",
+ "iris",
+ "wavora-audio-analysis",
 ]
 
 [[package]]

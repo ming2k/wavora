@@ -155,10 +155,10 @@ const fn english(key: Key) -> &'static str {
         Key::Album => "Album",
         Key::Duration => "Time",
         Key::VisualDescription => {
-            "Colour is music's second emotional layer. Switching a preset never interrupts playback."
+            "Six independent compositions turn frequency, pitch, loudness and transients into motion."
         }
         Key::VisualFootnote => {
-            "The stage reacts to decoded PCM energy and sixteen frequency bands."
+            "Driven by 32-band PCM analysis, bass/mid/treble, dBFS loudness, pitch, centroid and onset."
         }
         Key::SettingsDescription => "Playback and visual preferences are stored locally.",
         Key::DefaultVolume => "Default volume",
@@ -221,8 +221,10 @@ const fn chinese(key: Key) -> &'static str {
         Key::Artist => "艺人",
         Key::Album => "专辑",
         Key::Duration => "时长",
-        Key::VisualDescription => "颜色是音乐的第二层情绪，切换视觉不会中断播放。",
-        Key::VisualFootnote => "舞台由解码后的 PCM 能量与十六段频谱实时驱动。",
+        Key::VisualDescription => "六种独立构图，把频率、音高、响度和瞬态变成不同的空间运动。",
+        Key::VisualFootnote => {
+            "由 32 段 PCM 频谱、低中高频、dBFS 响度、音高、频谱质心与瞬态共同驱动。"
+        }
         Key::SettingsDescription => "播放与视觉偏好只保存在本机。",
         Key::DefaultVolume => "默认音量",
         Key::Language => "语言",

@@ -1,8 +1,8 @@
 use crate::app::{App, View};
-use crate::visuals::PRESETS;
 use iris::{Align, Color, Frame, Icon, LayoutOpts, TableColumn, TableOpts, Theme};
 use wavora_core::format_duration;
 use wavora_i18n::{Key, Language, LanguagePreference, text};
+use wavora_visuals::PRESETS;
 
 const ROOT_PAD: f32 = 18.0;
 const GAP: f32 = 14.0;
@@ -533,13 +533,29 @@ fn library(
 fn visuals(app: &mut App, frame: &mut Frame, language: Language) {
     frame.heading(text(language, Key::VisualStage), 1);
     frame.label_wrapped(text(language, Key::VisualDescription), 680.0);
+    let features = app.live_audio_features();
+    let pitch = if features.pitch_confidence > 0.2 {
+        format!("{:.0} Hz", features.pitch_hz)
+    } else {
+        "—".to_owned()
+    };
+    frame.label_wrapped_sized(
+        &format!(
+            "LIVE  ·  LOUDNESS {:.1} dBFS  ·  PITCH {pitch}  ·  CENTROID {:.0} Hz  ·  ONSET {:.0}%",
+            features.loudness_db,
+            features.spectral_centroid_hz,
+            features.onset * 100.0
+        ),
+        10.0,
+        680.0,
+    );
     frame.spacer(12.0);
     for (index, preset) in PRESETS.iter().enumerate() {
         frame.size_next(0.0, 62.0);
         if frame.selectable(
             &format!(
-                "{}\n{}  ·  #{:02X}{:02X}{:02X}",
-                preset.name, preset.subtitle, preset.accent[0], preset.accent[1], preset.accent[2]
+                "{}\n{}  ·  {}",
+                preset.name, preset.subtitle, preset.response
             ),
             app.preset == index,
         ) {

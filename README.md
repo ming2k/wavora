@@ -9,7 +9,7 @@ PipeWire、PulseAudio 或 ALSA 输出，因此播放常见格式不依赖 GStrea
 
 - 本地优先，不依赖在线音乐账号或私有音源接口
 - 暗色、克制、具有空间层次的音乐舞台
-- 可切换的粒子视觉气质，以实时 PCM 能量和 16 段频谱驱动画面
+- 六种不同构图的视觉引擎，以 32 段频谱、音高、响度、低中高频与瞬态驱动画面
 - 播放、媒体扫描和渲染分离，避免阻塞 UI 帧
 - 跟随系统语言，也可在设置中固定为 English 或简体中文
 - 虚拟化曲目表格、固定表头、可见滚动条和符合 Wayland 习惯的滚动方向
@@ -27,17 +27,17 @@ meson setup ../optics/build ../optics -Dexamples=true
 meson compile -C ../optics/build
 ```
 
-然后运行 Wavora：
+然后直接使用 Cargo 运行 Wavora：
 
 ```bash
-./run.sh
+cargo run --release
 ```
 
 也可以把音乐文件或目录传给它：
 
 ```bash
-./run.sh ~/Music
-./run.sh ~/Music/example.flac
+cargo run --release -- ~/Music
+cargo run --release -- ~/Music/example.flac
 ```
 
 本地安装（默认安装到 `~/.local`）会同时放置桌面启动器、图标、AppStream 元数据和
@@ -64,7 +64,8 @@ cargo audit --no-fetch
 `audioresample`、`volume`，以及 PipeWire、PulseAudio、自动音频或 ALSA 输出插件之一。
 不要求安装 GStreamer 的 FLAC/MP3/AAC 解码插件。
 
-工作区按职责分为 `wavora-core`（领域模型）、`wavora-i18n`（语言解析与文案）、
-`wavora-media`（扫描、解码与输出）和根应用（状态、持久化、Optics UI/视觉）。
+工作区按职责分为 `wavora-core`（领域模型）、`wavora-audio-analysis`（纯 PCM 特征提取）、
+`wavora-i18n`（语言解析与文案）、`wavora-media`（扫描、解码与输出）、
+`wavora-visuals`（预设、响应包络、转场与 Flux 绘制）和根应用（状态、持久化、Optics UI）。
 架构与设计约束见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 和
 [docs/DESIGN.md](docs/DESIGN.md)。
