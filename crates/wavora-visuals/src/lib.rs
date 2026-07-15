@@ -4,10 +4,18 @@
 //! its own composition. Adding an effect does not require touching playback,
 //! application state, or the UI toolkit.
 
-use flux::{Canvas, GradientStop, rgba};
+use flux::{Canvas, Device, Format, GradientStop, Image, rgba};
 use iris::PaintHost;
+use serde::{Deserialize, Serialize};
+use std::ffi::c_void;
 use std::sync::{Arc, RwLock};
 use wavora_audio_analysis::{AudioFeatures, SPECTRUM_BANDS};
+
+/// Maximum number of independently positioned atmosphere sources.
+///
+/// The bound keeps serialized scenes understandable and caps full-screen
+/// overdraw on integrated GPUs while still allowing useful colour mixing.
+pub const MAX_ATMOSPHERE_SOURCES: usize = 4;
 
 /// Rendering strategy used by a visual preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +103,305 @@ impl VisualTuning {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+/// How an atmosphere source chooses its two gradient colours.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AtmospherePalette {
+    /// Follow the active composition's accent and secondary colours.
+    #[default]
+    Preset,
+    /// Derive a private two-colour ramp from the source hue and saturation.
+    Custom,
+}
+
+/// Radial opacity profile for one atmosphere source.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AtmosphereFalloff {
+    /// Wide, low-contrast light suited to off-window placement.
+    #[default]
+    Diffuse,
+    /// Brighter centre with a soft edge.
+    Focused,
+    /// A restrained ring with a dim centre.
+    Halo,
+}
+
+/// Geometric footprint of one atmosphere source.
+///
+/// Geometry is deliberately independent from [`AtmosphereFalloff`]: the
+/// former controls where light exists, while the latter controls how it fades.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AtmosphereSourceShape {
+    /// A single isotropic light. This is the cheapest source to render.
+    #[default]
+    Circle,
+    /// A soft elongated area light whose long axis follows `rotation`.
+    Oval,
+    /// A directional, capsule-like wash suited to edge and off-window light.
+    Beam,
+}
+
+/// Audio feature that independently drives one atmosphere source.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AtmosphereAudioResponse {
+    /// Keep the source entirely static apart from its optional drift.
+    None,
+    /// Follow broad perceptual energy.
+    #[default]
+    Energy,
+    /// Follow low-frequency energy.
+    Bass,
+    /// Follow mid-frequency energy.
+    Mid,
+    /// Follow high-frequency energy.
+    Treble,
+    /// Follow short attacks and beat-like transients.
+    Onset,
+}
+
+/// Optional procedural material field beneath the immediate light sources.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AtmosphereFieldKind {
+    /// No texture field; light sources render directly over the base.
+    #[default]
+    None,
+    /// Soft, granulated pigment plumes guided by the configured sources.
+    Watercolor,
+    /// A refracted, line-like light field inspired by water caustics.
+    Caustics,
+}
+
+/// Configuration shared by the procedural atmosphere material fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AtmosphereField {
+    pub kind: AtmosphereFieldKind,
+    pub intensity: f32,
+    pub scale: f32,
+    pub motion: f32,
+    pub palette: AtmospherePalette,
+    pub hue: f32,
+    pub saturation: f32,
+    pub seed: u32,
+}
+
+impl Default for AtmosphereField {
+    fn default() -> Self {
+        Self {
+            kind: AtmosphereFieldKind::None,
+            intensity: 0.85,
+            scale: 1.0,
+            motion: 0.28,
+            palette: AtmospherePalette::Preset,
+            hue: 0.54,
+            saturation: 0.68,
+            seed: 0x57A7_0A11,
+        }
+    }
+}
+
+impl AtmosphereField {
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        let defaults = Self::default();
+        self.intensity = finite_or(self.intensity, defaults.intensity).clamp(0.0, 1.5);
+        self.scale = finite_or(self.scale, defaults.scale).clamp(0.45, 2.2);
+        self.motion = finite_or(self.motion, defaults.motion).clamp(0.0, 1.0);
+        self.hue = finite_or(self.hue, defaults.hue).rem_euclid(1.0);
+        self.saturation = finite_or(self.saturation, defaults.saturation).clamp(0.0, 1.0);
+        self
+    }
+}
+
+/// One independently positioned and animated atmosphere light.
+///
+/// Positions are normalized window coordinates. Values outside `0..=1` are
+/// intentional: they place the source outside the window while its tail can
+/// remain visible. Radius and drift are fractions of the window's effective
+/// width. Radius is the circle radius or the short-axis radius of an elongated
+/// source; aspect and rotation define its long axis.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AtmosphereSource {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    pub shape: AtmosphereSourceShape,
+    pub aspect: f32,
+    pub rotation: f32,
+    pub intensity: f32,
+    pub palette: AtmospherePalette,
+    pub hue: f32,
+    pub saturation: f32,
+    pub falloff: AtmosphereFalloff,
+    pub drift: f32,
+    pub phase: f32,
+    pub audio_response: AtmosphereAudioResponse,
+    pub audio_intensity: f32,
+    pub audio_scale: f32,
+}
+
+impl Default for AtmosphereSource {
+    fn default() -> Self {
+        Self {
+            x: 0.56,
+            y: 0.42,
+            radius: 0.48,
+            shape: AtmosphereSourceShape::Circle,
+            aspect: 2.0,
+            rotation: 0.0,
+            intensity: 1.0,
+            palette: AtmospherePalette::Preset,
+            hue: 0.56,
+            saturation: 0.72,
+            falloff: AtmosphereFalloff::Diffuse,
+            drift: 0.0,
+            phase: 0.0,
+            audio_response: AtmosphereAudioResponse::Energy,
+            audio_intensity: 0.0,
+            audio_scale: 0.18,
+        }
+    }
+}
+
+impl AtmosphereSource {
+    /// A visible, deliberately offset source suitable for an Add action.
+    #[must_use]
+    pub fn added(index: usize) -> Self {
+        const POSITIONS: [(f32, f32); MAX_ATMOSPHERE_SOURCES] =
+            [(0.56, 0.42), (-0.10, 0.66), (1.12, 0.22), (0.38, 1.10)];
+        const HUES: [f32; MAX_ATMOSPHERE_SOURCES] = [0.56, 0.78, 0.08, 0.46];
+        let slot = index.min(MAX_ATMOSPHERE_SOURCES - 1);
+        let phase = f32::from(u16::try_from(slot).unwrap_or_default())
+            / f32::from(u16::try_from(MAX_ATMOSPHERE_SOURCES).unwrap_or(1));
+        Self {
+            x: POSITIONS[slot].0,
+            y: POSITIONS[slot].1,
+            radius: if slot == 0 { 0.48 } else { 0.42 },
+            shape: if slot == 0 {
+                AtmosphereSourceShape::Circle
+            } else if slot == 2 {
+                AtmosphereSourceShape::Beam
+            } else {
+                AtmosphereSourceShape::Oval
+            },
+            aspect: if slot == 2 { 2.8 } else { 2.0 },
+            rotation: [0.0, -0.08, 0.13, 0.22][slot],
+            intensity: if slot == 0 { 1.0 } else { 0.78 },
+            palette: if slot == 0 {
+                AtmospherePalette::Preset
+            } else {
+                AtmospherePalette::Custom
+            },
+            hue: HUES[slot],
+            saturation: 0.72,
+            falloff: if slot == 2 {
+                AtmosphereFalloff::Halo
+            } else {
+                AtmosphereFalloff::Diffuse
+            },
+            drift: 0.0,
+            phase,
+            audio_response: match slot {
+                1 => AtmosphereAudioResponse::Bass,
+                2 => AtmosphereAudioResponse::Treble,
+                3 => AtmosphereAudioResponse::Onset,
+                _ => AtmosphereAudioResponse::Energy,
+            },
+            audio_intensity: if slot == 0 { 0.0 } else { 0.22 },
+            audio_scale: if slot == 0 { 0.18 } else { 0.12 },
+        }
+    }
+
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        let defaults = Self::default();
+        self.x = finite_or(self.x, defaults.x).clamp(-4.0, 5.0);
+        self.y = finite_or(self.y, defaults.y).clamp(-4.0, 5.0);
+        self.radius = finite_or(self.radius, defaults.radius).clamp(0.05, 2.0);
+        self.aspect = finite_or(self.aspect, defaults.aspect).clamp(1.0, 4.0);
+        self.rotation = finite_or(self.rotation, defaults.rotation).clamp(-0.5, 0.5);
+        self.intensity = finite_or(self.intensity, defaults.intensity).clamp(0.0, 2.0);
+        self.hue = finite_or(self.hue, defaults.hue).rem_euclid(1.0);
+        self.saturation = finite_or(self.saturation, defaults.saturation).clamp(0.0, 1.0);
+        self.drift = finite_or(self.drift, defaults.drift).clamp(0.0, 0.18);
+        self.phase = finite_or(self.phase, defaults.phase).rem_euclid(1.0);
+        self.audio_intensity =
+            finite_or(self.audio_intensity, defaults.audio_intensity).clamp(0.0, 1.5);
+        self.audio_scale = finite_or(self.audio_scale, defaults.audio_scale).clamp(0.0, 0.8);
+        self
+    }
+}
+
+/// A composable atmosphere scene rendered independently from the composition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Atmosphere {
+    pub enabled: bool,
+    pub composition_visible: bool,
+    pub field: AtmosphereField,
+    pub sources: Vec<AtmosphereSource>,
+}
+
+impl Default for Atmosphere {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            composition_visible: true,
+            field: AtmosphereField::default(),
+            sources: vec![AtmosphereSource::default()],
+        }
+    }
+}
+
+impl Atmosphere {
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        self.field = self.field.normalized();
+        self.sources.truncate(MAX_ATMOSPHERE_SOURCES);
+        self.sources = self
+            .sources
+            .into_iter()
+            .map(AtmosphereSource::normalized)
+            .collect();
+        self
+    }
+
+    /// Adds a visible source when capacity permits.
+    pub fn add_source(&mut self) -> bool {
+        if self.sources.len() >= MAX_ATMOSPHERE_SOURCES {
+            return false;
+        }
+        self.sources
+            .push(AtmosphereSource::added(self.sources.len()));
+        true
+    }
+
+    /// Removes one source without changing the remaining sources' parameters.
+    pub fn remove_source(&mut self, index: usize) -> bool {
+        if index >= self.sources.len() {
+            return false;
+        }
+        self.sources.remove(index);
+        true
+    }
+
+    fn has_motion(&self) -> bool {
+        self.enabled
+            && (self.sources.iter().any(|source| source.drift > 0.000_1)
+                || (self.field.kind != AtmosphereFieldKind::None && self.field.motion > 0.000_1))
+    }
+}
+
+fn finite_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() { value } else { fallback }
+}
+
+#[derive(Debug, Clone, Copy)]
 struct StageViewport {
     x: f32,
     y: f32,
@@ -107,6 +413,113 @@ impl StageViewport {
     fn is_visible(self) -> bool {
         self.width >= 80.0 && self.height >= 80.0
     }
+}
+
+/// Animated, normalized values used by the compact audio metric bars.
+///
+/// The order is loudness, pitch, spectral centroid, and onset. Keeping the
+/// snapshot value-only lets the UI render it without taking ownership of the
+/// animation clock or duplicating the feature mapping.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct AudioMetricSnapshot {
+    pub levels: [f32; 4],
+    pub pulses: [f32; 4],
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct BallisticMetric {
+    level: f32,
+    fall_velocity: f32,
+    pulse: f32,
+}
+
+impl BallisticMetric {
+    fn update(&mut self, target: f32, impulse: f32, gravity: f32, pulse_decay: f32, dt: f32) {
+        let target = target.clamp(0.0, 1.0);
+        let rise = (target - self.level).max(0.0);
+        if target >= self.level {
+            self.level = target;
+            self.fall_velocity = 0.0;
+        } else {
+            // A ballistic release starts gently, then accelerates until it
+            // meets the live signal. A new upward sample immediately catches
+            // the bar and resets the fall, like a peak meter with gravity.
+            let fall_distance = self.fall_velocity.mul_add(dt, 0.5 * gravity * dt * dt);
+            self.fall_velocity += gravity * dt;
+            self.level = (self.level - fall_distance).max(target);
+            if self.level <= target + f32::EPSILON {
+                self.fall_velocity = 0.0;
+            }
+        }
+        self.pulse = (self.pulse * (-pulse_decay * dt).exp())
+            .max(impulse)
+            .max(rise * 2.4)
+            .clamp(0.0, 1.0);
+    }
+
+    fn is_settled(self) -> bool {
+        self.level < 0.000_5 && self.pulse < 0.002 && self.fall_velocity < 0.002
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AudioMetricMotion {
+    metrics: [BallisticMetric; 4],
+}
+
+impl AudioMetricMotion {
+    fn update(&mut self, features: &AudioFeatures, dt: f32) {
+        let targets = normalized_audio_metrics(features);
+        let onset = features.onset.clamp(0.0, 1.0);
+        let impulses = [onset * 0.34, onset * 0.10, onset * 0.16, onset];
+        // Transients should clear quickly; frequency-bearing values stay
+        // readable long enough for the eye to track them.
+        let gravity = [3.0, 1.7, 2.1, 6.2];
+        let pulse_decay = [6.8, 5.2, 5.8, 9.5];
+        for (index, metric) in self.metrics.iter_mut().enumerate() {
+            metric.update(
+                targets[index],
+                impulses[index],
+                gravity[index],
+                pulse_decay[index],
+                dt,
+            );
+        }
+    }
+
+    fn snapshot(self) -> AudioMetricSnapshot {
+        AudioMetricSnapshot {
+            levels: self.metrics.map(|metric| metric.level),
+            pulses: self.metrics.map(|metric| metric.pulse),
+        }
+    }
+
+    fn is_settled(self) -> bool {
+        self.metrics.into_iter().all(BallisticMetric::is_settled)
+    }
+}
+
+fn normalized_audio_metrics(features: &AudioFeatures) -> [f32; 4] {
+    let loudness = if features.loudness_db.is_finite() {
+        ((features.loudness_db.clamp(-60.0, 0.0) + 60.0) / 60.0).powf(0.82)
+    } else {
+        0.0
+    };
+    let pitch = if features.pitch_confidence > 0.2 {
+        normalize_log_frequency(features.pitch_hz, 50.0, 1_200.0)
+    } else {
+        0.0
+    };
+    let centroid = normalize_log_frequency(features.spectral_centroid_hz, 45.0, 16_000.0);
+    let onset = features.onset.clamp(0.0, 1.0).sqrt();
+    [loudness, pitch, centroid, onset]
+}
+
+fn normalize_log_frequency(value: f32, minimum: f32, maximum: f32) -> f32 {
+    if !value.is_finite() || value <= 0.0 {
+        return 0.0;
+    }
+    ((value.clamp(minimum, maximum) / minimum).ln() / (maximum / minimum).ln()).clamp(0.0, 1.0)
 }
 
 /// Render-thread snapshot. Audio fields are smoothed here rather than in the
@@ -121,9 +534,10 @@ pub struct VisualState {
     pub features: AudioFeatures,
     pub preset: usize,
     pub tuning: VisualTuning,
-    pub stage_active: bool,
-    viewport: StageViewport,
+    atmosphere: Arc<Atmosphere>,
+    viewport: Option<StageViewport>,
     transition: f32,
+    metric_motion: AudioMetricMotion,
 }
 
 impl Default for VisualState {
@@ -137,9 +551,10 @@ impl Default for VisualState {
             features: AudioFeatures::default(),
             preset: 0,
             tuning: VisualTuning::default(),
-            stage_active: false,
-            viewport: StageViewport::default(),
+            atmosphere: Arc::new(Atmosphere::default()),
+            viewport: None,
             transition: 0.0,
+            metric_motion: AudioMetricMotion::default(),
         }
     }
 }
@@ -157,16 +572,18 @@ impl VisualState {
         preset: usize,
         measured: AudioFeatures,
         tuning: VisualTuning,
-        stage_active: bool,
+        atmosphere: &Atmosphere,
     ) {
         let dt = dt.clamp(0.0, 0.1);
         self.width = width.max(1.0);
         self.height = height.max(1.0);
         self.tuning = tuning.normalized();
+        if self.atmosphere.as_ref() != atmosphere {
+            self.atmosphere = Arc::new(atmosphere.clone().normalized());
+        }
         self.elapsed += dt * self.tuning.motion;
         self.position_ratio = position_ratio.clamp(0.0, 1.0);
         self.playing = playing;
-        self.stage_active = stage_active;
         let preset = preset % PRESETS.len();
         if preset != self.preset {
             self.preset = preset;
@@ -174,23 +591,30 @@ impl VisualState {
         }
         self.transition = (self.transition - dt * 1.45).max(0.0);
 
-        let mut target = if playing {
+        let measured = if playing {
             measured
         } else {
             AudioFeatures::default()
         };
+        self.metric_motion.update(&measured, dt);
+        let mut target = measured;
         apply_intensity(&mut target, self.tuning.intensity);
         smooth_features(&mut self.features, &target, dt);
     }
 
+    /// Returns the current UI meter animation without exposing mutable motion
+    /// state to the chrome layer.
+    #[must_use]
+    pub fn audio_metric_snapshot(&self) -> AudioMetricSnapshot {
+        self.metric_motion.snapshot()
+    }
+
     pub fn set_stage_viewport(&mut self, viewport: Option<(f32, f32, f32, f32)>) {
-        self.viewport = viewport.map_or_else(StageViewport::default, |(x, y, width, height)| {
-            StageViewport {
-                x,
-                y,
-                width: width.max(0.0),
-                height: height.max(0.0),
-            }
+        self.viewport = viewport.map(|(x, y, width, height)| StageViewport {
+            x,
+            y,
+            width: width.max(0.0),
+            height: height.max(0.0),
         });
     }
 
@@ -201,7 +625,11 @@ impl VisualState {
     /// have settled, allowing Iris to return to its low-power idle cadence.
     #[must_use]
     pub fn needs_animation_frame(&self) -> bool {
-        self.playing || self.transition > 0.0 || !features_are_settled(&self.features)
+        self.playing
+            || self.transition > 0.0
+            || !features_are_settled(&self.features)
+            || !self.metric_motion.is_settled()
+            || self.atmosphere.has_motion()
     }
 }
 
@@ -215,22 +643,414 @@ pub fn shared_state(preset: usize) -> SharedVisualState {
     }))
 }
 
-/// Paints the current visual snapshot into Iris's live Flux canvas.
-#[allow(unsafe_code, clippy::needless_pass_by_value)]
-pub fn paint(host: PaintHost, state: &SharedVisualState) {
-    let snapshot = state
-        .read()
-        .map_or_else(|_| VisualState::default(), |state| state.clone());
-    let scale = host.scale().max(1.0);
-    let canvas = unsafe {
-        // SAFETY: Iris owns this live canvas and keeps it valid throughout the
-        // paint callback. The borrowed Flux handle never destroys it.
-        Canvas::borrow_raw(host.canvas().cast::<flux::sys::flux_canvas>())
+const MATERIAL_OVERSCAN: f32 = 0.10;
+const MATERIAL_LONG_EDGE: u32 = 512;
+const MATERIAL_SHORT_EDGE_MIN: u32 = 224;
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn material_texture_dimensions(logical_width: f32, logical_height: f32) -> (u32, u32) {
+    let aspect = (logical_width.max(1.0) / logical_height.max(1.0)).clamp(0.35, 2.85);
+    if aspect >= 1.0 {
+        let height = ((MATERIAL_LONG_EDGE as f32 / aspect).round() as u32)
+            .clamp(MATERIAL_SHORT_EDGE_MIN, MATERIAL_LONG_EDGE);
+        (MATERIAL_LONG_EDGE, height)
+    } else {
+        let width = ((MATERIAL_LONG_EDGE as f32 * aspect).round() as u32)
+            .clamp(MATERIAL_SHORT_EDGE_MIN, MATERIAL_LONG_EDGE);
+        (width, MATERIAL_LONG_EDGE)
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn generate_material_texture(key: &MaterialTextureKey) -> Vec<u8> {
+    let pixel_count = (key.width as usize).saturating_mul(key.height as usize);
+    let mut pixels = vec![0_u8; pixel_count.saturating_mul(4)];
+    if key.field.kind == AtmosphereFieldKind::None {
+        return pixels;
+    }
+    let inverse_width = 1.0 / key.width.max(1) as f32;
+    let inverse_height = 1.0 / key.height.max(1) as f32;
+    let span = 1.0 + MATERIAL_OVERSCAN * 2.0;
+    for y in 0..key.height {
+        let scene_y = (y as f32 + 0.5).mul_add(inverse_height * span, -MATERIAL_OVERSCAN);
+        for x in 0..key.width {
+            let scene_x = (x as f32 + 0.5).mul_add(inverse_width * span, -MATERIAL_OVERSCAN);
+            let pixel = match key.field.kind {
+                AtmosphereFieldKind::None => [0, 0, 0, 0],
+                AtmosphereFieldKind::Watercolor => watercolor_pixel(key, scene_x, scene_y),
+                AtmosphereFieldKind::Caustics => caustics_pixel(key, scene_x, scene_y),
+            };
+            let offset = ((y as usize) * (key.width as usize) + x as usize) * 4;
+            pixels[offset..offset + 4].copy_from_slice(&pixel);
+        }
+    }
+    pixels
+}
+
+fn material_palette(key: &MaterialTextureKey) -> ([u8; 3], [u8; 3]) {
+    match key.field.palette {
+        AtmospherePalette::Preset => (key.preset_accent, key.preset_secondary),
+        AtmospherePalette::Custom => custom_atmosphere_palette(key.field.hue, key.field.saturation),
+    }
+}
+
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+fn watercolor_pixel(key: &MaterialTextureKey, scene_x: f32, scene_y: f32) -> [u8; 4] {
+    let (primary, secondary) = material_palette(key);
+    let aspect = key.width as f32 / key.height.max(1) as f32;
+    let height_in_widths = 1.0 / aspect;
+    let scale = key.field.scale;
+    let warp_x = (fbm(scene_x * 2.1 * scale, scene_y * 2.1 * scale, key.field.seed) - 0.5) * 0.15;
+    let warp_y = (fbm(
+        scene_x * 2.3 * scale + 9.7,
+        scene_y * 2.3 * scale - 4.1,
+        key.field.seed ^ 0xA341_316C,
+    ) - 0.5)
+        * 0.15;
+
+    let fallback_anchors = [
+        MaterialAnchor::from(&AtmosphereSource::added(0)),
+        MaterialAnchor::from(&AtmosphereSource::added(1)),
+    ];
+    let anchors: &[MaterialAnchor] = if key.anchors.is_empty() {
+        &fallback_anchors
+    } else {
+        &key.anchors
     };
-    canvas.save();
-    canvas.scale(scale, scale);
-    paint_scene(&canvas, &snapshot);
-    canvas.restore();
+    let mut alpha_union = 0.0_f32;
+    let mut colour_sum = [0.0_f32; 3];
+    let mut colour_weight = 0.0_f32;
+    for (index, anchor) in anchors.iter().enumerate() {
+        let radius = anchor.radius * 0.92_f32.min(height_in_widths * 1.7);
+        for pigment_index in 0_u32..2 {
+            let pigment_phase = anchor.phase.mul_add(
+                std::f32::consts::TAU,
+                index as f32 * 0.73 + pigment_index as f32 * 2.71,
+            );
+            let centre_x = anchor.x + pigment_phase.cos() * radius * 0.16;
+            let centre_y = anchor.y + pigment_phase.sin() * radius * 0.13 / height_in_widths;
+            let dx = scene_x + warp_x - centre_x;
+            let dy = (scene_y + warp_y - centre_y) * height_in_widths;
+            let rotation = anchor.rotation * std::f32::consts::TAU;
+            let local_x = rotation.cos().mul_add(dx, rotation.sin() * dy);
+            let local_y = (-rotation.sin()).mul_add(dx, rotation.cos() * dy);
+            let radius = radius.max(0.025);
+            let distance = match anchor.shape {
+                AtmosphereSourceShape::Circle => local_x.hypot(local_y) / radius,
+                AtmosphereSourceShape::Oval => (local_x / anchor.aspect).hypot(local_y) / radius,
+                AtmosphereSourceShape::Beam => {
+                    let longitudinal = local_x.abs() / (radius * anchor.aspect);
+                    let lateral = local_y.abs() / radius;
+                    (longitudinal.powi(4) + lateral.powi(4)).powf(0.25)
+                }
+            };
+            let pigment_slot = (index as u32).wrapping_mul(2) + pigment_index;
+            let edge_noise = fbm(
+                scene_x * 5.4 * scale + pigment_slot as f32 * 3.7,
+                scene_y * 5.4 * scale - pigment_slot as f32 * 2.9,
+                key.field.seed ^ pigment_slot.wrapping_mul(0x9E37_79B9),
+            );
+            let boundary = 1.02 - distance + (edge_noise - 0.5) * 0.58;
+            let wash = smoothstep(0.0, 0.72, boundary);
+            if wash <= f32::EPSILON {
+                continue;
+            }
+            let granulation = 0.62
+                + fbm(
+                    scene_x * 23.0 * scale,
+                    scene_y * 23.0 * scale,
+                    key.field.seed ^ 0xC801_3EA4 ^ pigment_slot,
+                ) * 0.38;
+            let tide = scene_x
+                .mul_add(17.0, scene_y * 11.0 + pigment_slot as f32 * 1.7)
+                .sin()
+                * 0.5
+                + 0.5;
+            let density = wash.powf(0.78) * granulation * (0.82 + tide * 0.18);
+            let source_alpha = (density * 0.17 * key.field.intensity).clamp(0.0, 0.38);
+            alpha_union = 1.0 - (1.0 - alpha_union) * (1.0 - source_alpha);
+            let pigment = if pigment_index == 0 {
+                mix_rgb(primary, secondary, edge_noise * 0.22)
+            } else {
+                mix_rgb(secondary, primary, edge_noise * 0.18)
+            };
+            for channel in 0..3 {
+                colour_sum[channel] += f32::from(pigment[channel]) * density;
+            }
+            colour_weight += density;
+        }
+    }
+    if colour_weight <= f32::EPSILON {
+        return [0, 0, 0, 0];
+    }
+    let colour = colour_sum.map(|channel| (channel / colour_weight).round().clamp(0.0, 255.0));
+    premultiplied_pixel(colour, alpha_union)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn caustics_pixel(key: &MaterialTextureKey, scene_x: f32, scene_y: f32) -> [u8; 4] {
+    let (primary, secondary) = material_palette(key);
+    let aspect = key.width as f32 / key.height.max(1) as f32;
+    let scale = key.field.scale;
+    let x = scene_x * aspect * 7.5 * scale;
+    let y = scene_y * 7.5 * scale;
+    let warp = fbm(x * 0.24, y * 0.24, key.field.seed) - 0.5;
+    let wave = (x * 1.37 + warp * 2.1).sin()
+        + (y * 1.83 - warp * 1.7).sin()
+        + ((x + y) * 0.91 + warp).sin();
+    let cross_wave = (x.mul_add(0.73, -y * 1.19) + warp * 2.6).sin()
+        + (x.mul_add(1.11, y * 0.58) - warp * 1.4).sin();
+    let ridge = (-wave.abs() * 4.6).exp().powf(1.5);
+    let cross_ridge = (-cross_wave.abs() * 5.8).exp().powf(1.8);
+    let shimmer = (ridge * 0.72 + cross_ridge * 0.54).clamp(0.0, 1.0);
+    let grain = 0.76
+        + fbm(
+            scene_x * 31.0 * scale,
+            scene_y * 31.0 * scale,
+            key.field.seed ^ 0xAD90_7A1D,
+        ) * 0.24;
+    let alpha = ((shimmer - 0.08).max(0.0) * grain * 0.23 * key.field.intensity).clamp(0.0, 0.38);
+    let colour = mix_rgb(primary, secondary, (warp + 0.5).clamp(0.0, 1.0));
+    premultiplied_pixel(
+        colour.map(|channel| f32::from(channel.saturating_add(18))),
+        alpha,
+    )
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn mix_rgb(first: [u8; 3], second: [u8; 3], amount: f32) -> [u8; 3] {
+    let amount = amount.clamp(0.0, 1.0);
+    std::array::from_fn(|index| {
+        f32::from(first[index])
+            .mul_add(1.0 - amount, f32::from(second[index]) * amount)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    })
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn premultiplied_pixel(colour: [f32; 3], alpha: f32) -> [u8; 4] {
+    let alpha = alpha.clamp(0.0, 1.0);
+    let alpha_u8 = (alpha * 255.0).round() as u8;
+    let channels = colour.map(|channel| (channel.clamp(0.0, 255.0) * alpha).round() as u8);
+    [channels[0], channels[1], channels[2], alpha_u8]
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let normalized = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    normalized * normalized * (3.0 - 2.0 * normalized)
+}
+
+fn fbm(mut x: f32, mut y: f32, seed: u32) -> f32 {
+    let mut value = 0.0;
+    let mut amplitude = 0.54;
+    let mut normalization = 0.0;
+    for octave in 0_u32..4 {
+        value += value_noise(x, y, seed ^ octave.wrapping_mul(0x68BC_21EB)) * amplitude;
+        normalization += amplitude;
+        x = x.mul_add(1.97, 0.37);
+        y = y.mul_add(2.03, -0.29);
+        amplitude *= 0.48;
+    }
+    value / normalization
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn value_noise(x: f32, y: f32, seed: u32) -> f32 {
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+    let sx = tx * tx * (3.0 - 2.0 * tx);
+    let sy = ty * ty * (3.0 - 2.0 * ty);
+    let sample = |px: i32, py: i32| {
+        let mixed = (px as u32)
+            .wrapping_mul(0x9E37_79B9)
+            .wrapping_add((py as u32).wrapping_mul(0x85EB_CA6B))
+            ^ seed;
+        hash01(mixed)
+    };
+    let top = sample(x0, y0).mul_add(1.0 - sx, sample(x0 + 1, y0) * sx);
+    let bottom = sample(x0, y0 + 1).mul_add(1.0 - sx, sample(x0 + 1, y0 + 1) * sx);
+    top.mul_add(1.0 - sy, bottom * sy)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct MaterialAnchor {
+    x: f32,
+    y: f32,
+    radius: f32,
+    shape: AtmosphereSourceShape,
+    aspect: f32,
+    rotation: f32,
+    phase: f32,
+}
+
+impl From<&AtmosphereSource> for MaterialAnchor {
+    fn from(source: &AtmosphereSource) -> Self {
+        Self {
+            x: source.x,
+            y: source.y,
+            radius: source.radius,
+            shape: source.shape,
+            aspect: source.aspect,
+            rotation: source.rotation,
+            phase: source.phase,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct MaterialTextureKey {
+    width: u32,
+    height: u32,
+    field: AtmosphereField,
+    anchors: Vec<MaterialAnchor>,
+    preset_accent: [u8; 3],
+    preset_secondary: [u8; 3],
+}
+
+#[derive(Default)]
+struct MaterialTextureCache {
+    device: Option<*mut c_void>,
+    key: Option<MaterialTextureKey>,
+    image: Option<Image>,
+}
+
+impl MaterialTextureCache {
+    #[allow(unsafe_code)]
+    fn prepare(
+        &mut self,
+        device_raw: *mut c_void,
+        atmosphere: &Atmosphere,
+        preset: VisualPreset,
+        logical_width: f32,
+        logical_height: f32,
+    ) {
+        if !atmosphere.enabled || atmosphere.field.kind == AtmosphereFieldKind::None {
+            self.clear();
+            return;
+        }
+        let (width, height) = material_texture_dimensions(logical_width, logical_height);
+        let mut texture_field = atmosphere.field.clone();
+        // Motion only changes the destination transform and never invalidates
+        // the generated pixels.
+        texture_field.motion = 0.0;
+        let (preset_accent, preset_secondary) =
+            if texture_field.palette == AtmospherePalette::Preset {
+                (preset.accent, preset.secondary)
+            } else {
+                ([0; 3], [0; 3])
+            };
+        let key = MaterialTextureKey {
+            width,
+            height,
+            field: texture_field,
+            anchors: if atmosphere.field.kind == AtmosphereFieldKind::Watercolor {
+                atmosphere
+                    .sources
+                    .iter()
+                    .map(MaterialAnchor::from)
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            preset_accent,
+            preset_secondary,
+        };
+        if self.device == Some(device_raw) && self.key.as_ref() == Some(&key) {
+            return;
+        }
+
+        self.image = None;
+        self.device = Some(device_raw);
+        let pixels = generate_material_texture(&key);
+        // SAFETY: Iris owns this device. Uploaded Images retain their own
+        // device reference, matching the application's artwork cache model.
+        let device = unsafe { Device::borrow_raw(device_raw.cast()) };
+        self.image = Image::from_bytes(
+            &device,
+            width,
+            height,
+            Format::FLUX_FORMAT_RGBA8_SRGB,
+            &pixels,
+        )
+        .ok();
+        self.key = Some(key);
+    }
+
+    fn clear(&mut self) {
+        self.image = None;
+        self.key = None;
+        self.device = None;
+    }
+}
+
+/// Device-backed renderer state cached by the application's paint closure.
+///
+/// Material fields are generated and uploaded only when their configuration,
+/// palette, geometry inputs, or target aspect ratio changes. Radial sources
+/// remain immediate Canvas draws; only source-guided watercolor needs a new
+/// texture after source geometry changes. Source audio response only affects
+/// immediate light geometry, avoiding per-frame material regeneration.
+#[derive(Default)]
+pub struct VisualRenderer {
+    shell_material: MaterialTextureCache,
+    stage_material: MaterialTextureCache,
+}
+
+impl VisualRenderer {
+    /// Paints the current visual snapshot into Iris's live Flux canvas.
+    #[allow(unsafe_code, clippy::needless_pass_by_value)]
+    pub fn paint(&mut self, host: PaintHost, state: &SharedVisualState) {
+        let snapshot = state
+            .read()
+            .map_or_else(|_| VisualState::default(), |state| state.clone());
+        let preset = PRESETS[snapshot.preset % PRESETS.len()];
+        self.shell_material.prepare(
+            host.device(),
+            &snapshot.atmosphere,
+            preset,
+            snapshot.width,
+            snapshot.height,
+        );
+        if let Some(viewport) = snapshot.viewport.filter(|viewport| viewport.is_visible()) {
+            self.stage_material.prepare(
+                host.device(),
+                &snapshot.atmosphere,
+                preset,
+                viewport.width,
+                viewport.height,
+            );
+        } else {
+            self.stage_material.clear();
+        }
+
+        let scale = host.scale().max(1.0);
+        let canvas = unsafe {
+            // SAFETY: Iris owns this live canvas and keeps it valid throughout
+            // the paint callback. The borrowed handle never destroys it.
+            Canvas::borrow_raw(host.canvas().cast::<flux::sys::flux_canvas>())
+        };
+        canvas.save();
+        canvas.scale(scale, scale);
+        paint_scene_with_materials(
+            &canvas,
+            &snapshot,
+            scale,
+            self.shell_material.image.as_ref(),
+            self.stage_material.image.as_ref(),
+        );
+        canvas.restore();
+    }
 }
 
 fn smooth_features(visible: &mut AudioFeatures, target: &AudioFeatures, dt: f32) {
@@ -323,74 +1143,93 @@ fn features_are_settled(features: &AudioFeatures) -> bool {
             .all(|value| value.abs() < LEVEL_EPSILON)
 }
 
-fn paint_scene(canvas: &Canvas, state: &VisualState) {
+#[cfg(test)]
+fn paint_scene(canvas: &Canvas, state: &VisualState, device_scale: f32) {
+    paint_scene_with_materials(canvas, state, device_scale, None, None);
+}
+
+fn paint_scene_with_materials(
+    canvas: &Canvas,
+    state: &VisualState,
+    device_scale: f32,
+    shell_material: Option<&Image>,
+    stage_material: Option<&Image>,
+) {
     let preset = PRESETS[state.preset % PRESETS.len()];
-    draw_app_backdrop(canvas, state, preset);
-    if state.stage_active && state.viewport.is_visible() {
-        let viewport = state.viewport;
+    if let Some(viewport) = state.viewport.filter(|viewport| viewport.is_visible()) {
+        draw_app_backdrop_with_material(canvas, state, preset, shell_material);
         let mut local = state.clone();
         local.width = viewport.width;
         local.height = viewport.height;
-        local.viewport = StageViewport::default();
+        local.viewport = None;
         canvas.save();
+        canvas.clip_rect(
+            viewport.x * device_scale,
+            viewport.y * device_scale,
+            viewport.width * device_scale,
+            viewport.height * device_scale,
+        );
         canvas.translate(viewport.x, viewport.y);
-        draw_stage(canvas, &local, preset);
+        draw_stage_with_material(canvas, &local, preset, stage_material);
         canvas.restore();
     } else {
-        draw_stage(canvas, state, preset);
+        draw_stage_with_material(canvas, state, preset, shell_material);
     }
 }
 
+#[cfg(test)]
 fn draw_stage(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
-    draw_backdrop(canvas, state, preset);
-    match preset.kind {
-        VisualKind::ParticleVeil => draw_particle_veil(canvas, state, preset),
-        VisualKind::PulseTunnel => draw_pulse_tunnel(canvas, state, preset),
-        VisualKind::OrbitalCore => draw_orbital_core(canvas, state, preset),
-        VisualKind::SpectralVoid => draw_spectral_void(canvas, state, preset),
-        VisualKind::VinylHalo => draw_vinyl_halo(canvas, state, preset),
-        VisualKind::StarRiver => draw_star_river(canvas, state, preset),
+    draw_stage_with_material(canvas, state, preset, None);
+}
+
+fn draw_stage_with_material(
+    canvas: &Canvas,
+    state: &VisualState,
+    preset: VisualPreset,
+    material: Option<&Image>,
+) {
+    draw_backdrop_with_material(canvas, state, preset, material);
+    if state.atmosphere.composition_visible {
+        match preset.kind {
+            VisualKind::ParticleVeil => draw_particle_veil(canvas, state, preset),
+            VisualKind::PulseTunnel => draw_pulse_tunnel(canvas, state, preset),
+            VisualKind::OrbitalCore => draw_orbital_core(canvas, state, preset),
+            VisualKind::SpectralVoid => draw_spectral_void(canvas, state, preset),
+            VisualKind::VinylHalo => draw_vinyl_halo(canvas, state, preset),
+            VisualKind::StarRiver => draw_star_river(canvas, state, preset),
+        }
     }
     draw_transition(canvas, state, preset);
 }
 
+#[cfg(test)]
 fn draw_app_backdrop(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
-    canvas.fill_rect_linear_gradient(
-        (0.0, 0.0, state.width, state.height),
-        (0.0, 0.0),
-        (state.width, state.height),
-        &[
-            GradientStop::new(0.0, rgba(2, 4, 7, 255)),
-            GradientStop::new(0.58, rgba(4, 6, 11, 255)),
-            GradientStop::new(1.0, rgba(1, 2, 5, 255)),
-        ],
-    );
-    let glow = state.tuning.glow;
-    canvas.fill_rect_radial_gradient(
-        (0.0, 0.0, state.width, state.height),
-        (state.width * 0.55, state.height * 0.42),
-        state.width.min(state.height) * 0.72,
-        &[
-            GradientStop::new(0.0, color(preset.accent, alpha_u8(9.0 * glow))),
-            GradientStop::new(0.42, color(preset.secondary, alpha_u8(5.0 * glow))),
-            GradientStop::new(1.0, color(preset.accent, 0)),
-        ],
-    );
-    for index in 0_u32..72 {
-        let x = hash01(index * 47 + 5) * state.width;
-        let y = hash01(index * 83 + 17) * state.height;
-        let shimmer = (state.elapsed * 0.42 + hash01(index) * 8.0).sin() * 0.5 + 0.5;
-        dot(
-            canvas,
-            x,
-            y,
-            0.55 + shimmer * 0.8,
-            rgba(210, 226, 240, alpha_u8(5.0 + shimmer * 21.0)),
-        );
-    }
+    draw_app_backdrop_with_material(canvas, state, preset, None);
 }
 
+fn draw_app_backdrop_with_material(
+    canvas: &Canvas,
+    state: &VisualState,
+    preset: VisualPreset,
+    material: Option<&Image>,
+) {
+    // Keep the shell behind the isolated Visual Stage on the same diffuse
+    // gradient as every other tab. Only the composition itself is clipped to
+    // the stage viewport, so switching tabs no longer changes the page glow.
+    draw_backdrop_with_material(canvas, state, preset, material);
+}
+
+#[cfg(test)]
 fn draw_backdrop(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
+    draw_backdrop_with_material(canvas, state, preset, None);
+}
+
+fn draw_backdrop_with_material(
+    canvas: &Canvas,
+    state: &VisualState,
+    preset: VisualPreset,
+    material: Option<&Image>,
+) {
     let (width, height) = (state.width, state.height);
     canvas.fill_rect_linear_gradient(
         (0.0, 0.0, width, height),
@@ -402,24 +1241,238 @@ fn draw_backdrop(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
             GradientStop::new(1.0, rgba(1, 2, 5, 255)),
         ],
     );
-    let center = match preset.kind {
-        VisualKind::PulseTunnel => (width * 0.55, height * 0.45),
-        VisualKind::SpectralVoid => (width * 0.53, height * 0.43),
-        VisualKind::VinylHalo => (width * 0.56, height * 0.44),
-        _ => (width * 0.56, height * 0.42),
+    if let Some(material) = material {
+        draw_material_field(canvas, state, material);
+    }
+    draw_atmosphere(canvas, state, preset);
+}
+
+fn draw_material_field(canvas: &Canvas, state: &VisualState, material: &Image) {
+    let field = &state.atmosphere.field;
+    let margin = MATERIAL_OVERSCAN;
+    let phase = f32::from(u16::try_from(field.seed & 0xffff).unwrap_or_default())
+        / f32::from(u16::MAX)
+        * std::f32::consts::TAU;
+    let speed = match field.kind {
+        AtmosphereFieldKind::Watercolor => 0.025,
+        AtmosphereFieldKind::Caustics => 0.070,
+        AtmosphereFieldKind::None => 0.0,
     };
-    let radius = width.min(height) * (0.48 + state.features.energy * 0.09);
-    let glow = state.tuning.glow;
+    let travel = field.motion * margin * 0.34;
+    let angle = state.elapsed.mul_add(speed, phase);
+    let offset_x = angle.cos() * state.width * travel;
+    let offset_y = angle.sin() * state.height * travel;
+    canvas.draw_image(
+        material,
+        -state.width * margin + offset_x,
+        -state.height * margin + offset_y,
+        state.width * (1.0 + margin * 2.0),
+        state.height * (1.0 + margin * 2.0),
+    );
+}
+
+fn draw_atmosphere(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
+    if !state.atmosphere.enabled {
+        return;
+    }
+
+    for source in &state.atmosphere.sources {
+        draw_atmosphere_source(canvas, state, preset, source);
+    }
+}
+
+fn draw_atmosphere_source(
+    canvas: &Canvas,
+    state: &VisualState,
+    preset: VisualPreset,
+    source: &AtmosphereSource,
+) {
+    let (width, height) = (state.width, state.height);
+    let phase = source.phase * std::f32::consts::TAU;
+    let drift_angle = state.elapsed.mul_add(0.07 + source.phase * 0.09, phase);
+    let drift_radius = width.min(height) * source.drift;
+    let center = (
+        width.mul_add(source.x, drift_angle.cos() * drift_radius),
+        height.mul_add(source.y, drift_angle.sin() * drift_radius),
+    );
+    let audio_drive = atmosphere_audio_drive(&state.features, source.audio_response);
+    let radius = atmosphere_source_radius(width, height, source.radius)
+        * audio_drive.mul_add(source.audio_scale, 1.0);
+    if radius <= f32::EPSILON {
+        return;
+    }
+
+    let (primary, secondary) = match source.palette {
+        AtmospherePalette::Preset => (preset.accent, preset.secondary),
+        AtmospherePalette::Custom => custom_atmosphere_palette(source.hue, source.saturation),
+    };
+    let strength =
+        source.intensity * state.tuning.glow * audio_drive.mul_add(source.audio_intensity, 1.0);
+    let rotation = source.rotation * std::f32::consts::TAU;
+    let axis = (rotation.cos(), rotation.sin());
+    let axis_span = radius * (source.aspect - 1.0);
+
+    match source.shape {
+        AtmosphereSourceShape::Circle => draw_atmosphere_lobe(
+            canvas,
+            (width, height),
+            center,
+            radius,
+            strength,
+            primary,
+            secondary,
+            source.falloff,
+        ),
+        AtmosphereSourceShape::Oval if axis_span <= radius * 0.01 => draw_atmosphere_lobe(
+            canvas,
+            (width, height),
+            center,
+            radius,
+            strength,
+            primary,
+            secondary,
+            source.falloff,
+        ),
+        AtmosphereSourceShape::Oval => {
+            // A bounded chain of soft radial lobes approximates an anisotropic
+            // area light without allocating a source texture or regenerating
+            // pixels for audio-driven scale changes.
+            for index in 0_u16..9 {
+                let unit = f32::from(index) / 8.0;
+                let position = unit.mul_add(1.84, -0.92);
+                let cross_section = (1.0 - position * position).max(0.0).sqrt();
+                let lobe_center = (
+                    center.0 + axis.0 * axis_span * position,
+                    center.1 + axis.1 * axis_span * position,
+                );
+                draw_atmosphere_lobe(
+                    canvas,
+                    (width, height),
+                    lobe_center,
+                    radius * cross_section.max(0.18),
+                    strength * 0.28,
+                    primary,
+                    secondary,
+                    source.falloff,
+                );
+            }
+        }
+        AtmosphereSourceShape::Beam => {
+            // A capsule profile keeps directional light soft at both ends and
+            // remains useful when its centre sits beyond a window edge.
+            for index in 0_u16..9 {
+                let position = (f32::from(index) / 8.0).mul_add(2.0, -1.0);
+                let lobe_center = (
+                    center.0 + axis.0 * axis_span * position,
+                    center.1 + axis.1 * axis_span * position,
+                );
+                draw_atmosphere_lobe(
+                    canvas,
+                    (width, height),
+                    lobe_center,
+                    radius,
+                    strength * 0.22,
+                    primary,
+                    secondary,
+                    source.falloff,
+                );
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_atmosphere_lobe(
+    canvas: &Canvas,
+    viewport: (f32, f32),
+    center: (f32, f32),
+    radius: f32,
+    strength: f32,
+    primary: [u8; 3],
+    secondary: [u8; 3],
+    falloff: AtmosphereFalloff,
+) {
+    let left = (center.0 - radius).max(0.0);
+    let top = (center.1 - radius).max(0.0);
+    let right = (center.0 + radius).min(viewport.0);
+    let bottom = (center.1 + radius).min(viewport.1);
+    if radius <= f32::EPSILON || strength <= f32::EPSILON || right <= left || bottom <= top {
+        return;
+    }
+
+    let diffuse = [
+        GradientStop::new(0.0, color(primary, alpha_u8(31.0 * strength))),
+        GradientStop::new(0.38, color(secondary, alpha_u8(16.0 * strength))),
+        GradientStop::new(1.0, color(primary, 0)),
+    ];
+    let focused = [
+        GradientStop::new(0.0, color(primary, alpha_u8(52.0 * strength))),
+        GradientStop::new(0.24, color(primary, alpha_u8(36.0 * strength))),
+        GradientStop::new(0.58, color(secondary, alpha_u8(13.0 * strength))),
+        GradientStop::new(1.0, color(primary, 0)),
+    ];
+    let halo = [
+        GradientStop::new(0.0, color(primary, alpha_u8(4.0 * strength))),
+        GradientStop::new(0.22, color(secondary, alpha_u8(12.0 * strength))),
+        GradientStop::new(0.46, color(primary, alpha_u8(37.0 * strength))),
+        GradientStop::new(0.72, color(secondary, alpha_u8(11.0 * strength))),
+        GradientStop::new(1.0, color(primary, 0)),
+    ];
+    let stops: &[GradientStop] = match falloff {
+        AtmosphereFalloff::Diffuse => &diffuse,
+        AtmosphereFalloff::Focused => &focused,
+        AtmosphereFalloff::Halo => &halo,
+    };
     canvas.fill_rect_radial_gradient(
-        (0.0, 0.0, width, height),
+        (left, top, right - left, bottom - top),
         center,
         radius,
-        &[
-            GradientStop::new(0.0, color(preset.accent, alpha_u8(31.0 * glow))),
-            GradientStop::new(0.38, color(preset.secondary, alpha_u8(16.0 * glow))),
-            GradientStop::new(1.0, color(preset.accent, 0)),
-        ],
+        stops,
     );
+}
+
+fn atmosphere_source_radius(width: f32, height: f32, source_radius: f32) -> f32 {
+    width.min(height * 1.7) * source_radius
+}
+
+fn atmosphere_audio_drive(features: &AudioFeatures, response: AtmosphereAudioResponse) -> f32 {
+    let value = match response {
+        AtmosphereAudioResponse::None => 0.0,
+        AtmosphereAudioResponse::Energy => features.energy,
+        AtmosphereAudioResponse::Bass => features.bass,
+        AtmosphereAudioResponse::Mid => features.mid,
+        AtmosphereAudioResponse::Treble => features.treble,
+        AtmosphereAudioResponse::Onset => features.onset,
+    };
+    finite_or(value, 0.0).clamp(0.0, 1.0)
+}
+
+fn custom_atmosphere_palette(hue: f32, saturation: f32) -> ([u8; 3], [u8; 3]) {
+    (
+        hsl_to_rgb(hue, saturation, 0.68),
+        hsl_to_rgb((hue + 0.08).rem_euclid(1.0), saturation * 0.82, 0.52),
+    )
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> [u8; 3] {
+    let hue = finite_or(hue, 0.0).rem_euclid(1.0);
+    let saturation = finite_or(saturation, 0.0).clamp(0.0, 1.0);
+    let lightness = finite_or(lightness, 0.0).clamp(0.0, 1.0);
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let sector = hue * 6.0;
+    let secondary = chroma * (1.0 - (sector.rem_euclid(2.0) - 1.0).abs());
+    let (red, green, blue) = match sector.floor() as u8 {
+        0 => (chroma, secondary, 0.0),
+        1 => (secondary, chroma, 0.0),
+        2 => (0.0, chroma, secondary),
+        3 => (0.0, secondary, chroma),
+        4 => (secondary, 0.0, chroma),
+        _ => (chroma, 0.0, secondary),
+    };
+    let match_value = lightness - chroma * 0.5;
+    [red, green, blue]
+        .map(|channel| ((channel + match_value) * 255.0).round().clamp(0.0, 255.0) as u8)
 }
 
 fn draw_particle_veil(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
@@ -971,7 +2024,7 @@ mod tests {
             for (index, band) in spectrum.iter_mut().enumerate() {
                 *band = 0.15 + (index % 7) as f32 * 0.09;
             }
-            let state = VisualState {
+            let mut state = VisualState {
                 width: 320.0,
                 height: 180.0,
                 elapsed: 3.75,
@@ -997,7 +2050,8 @@ mod tests {
                 transition: 0.0,
                 ..VisualState::default()
             };
-            paint_scene(&canvas, &state);
+            state.set_stage_viewport(Some((0.0, 0.0, 320.0, 180.0)));
+            paint_scene(&canvas, &state, 1.0);
             canvas.end();
             let (_, _, _, pixels) = canvas.read_pixels().expect("CPU pixels");
             let hash = pixels.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
@@ -1008,6 +2062,460 @@ mod tests {
                 "preset {preset} duplicated another frame"
             );
         }
+    }
+
+    #[test]
+    fn every_preset_renders_a_distinct_full_screen_background() {
+        let mut hashes = HashSet::new();
+        for preset in 0..PRESETS.len() {
+            let canvas = Canvas::new_cpu(160, 100, 1.0).expect("CPU canvas");
+            canvas
+                .begin_cpu(Some(rgba(0, 0, 0, 255)))
+                .expect("begin frame");
+            paint_scene(
+                &canvas,
+                &VisualState {
+                    width: 160.0,
+                    height: 100.0,
+                    elapsed: 2.25,
+                    preset,
+                    ..VisualState::default()
+                },
+                1.0,
+            );
+            canvas.end();
+            let (_, _, _, pixels) = canvas.read_pixels().expect("CPU pixels");
+            let hash = pixels.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+            assert!(
+                hashes.insert(hash),
+                "preset {preset} duplicated another full-screen background"
+            );
+        }
+    }
+
+    #[test]
+    fn isolated_stage_shell_uses_the_standard_diffuse_backdrop() {
+        fn render(state: &VisualState, shell: bool) -> Vec<u8> {
+            let canvas = Canvas::new_cpu(240, 140, 1.0).expect("CPU canvas");
+            canvas
+                .begin_cpu(Some(rgba(0, 0, 0, 255)))
+                .expect("begin frame");
+            let preset = PRESETS[state.preset % PRESETS.len()];
+            if shell {
+                draw_app_backdrop(&canvas, state, preset);
+            } else {
+                draw_backdrop(&canvas, state, preset);
+            }
+            canvas.end();
+            let (_, _, _, pixels) = canvas.read_pixels().expect("CPU pixels");
+            pixels.to_vec()
+        }
+
+        let state = VisualState {
+            width: 240.0,
+            height: 140.0,
+            features: AudioFeatures {
+                energy: 0.72,
+                ..AudioFeatures::default()
+            },
+            preset: 2,
+            ..VisualState::default()
+        };
+
+        assert_eq!(render(&state, true), render(&state, false));
+    }
+
+    #[test]
+    fn stage_rendering_is_clipped_to_its_owned_viewport() {
+        const WIDTH: u16 = 160;
+        const HEIGHT: u16 = 100;
+        const SCALE: u16 = 2;
+        const VIEWPORT: (u16, u16, u16, u16) = (32, 10, 96, 80);
+
+        fn render(state: &VisualState, shell_only: bool) -> (usize, Vec<u8>) {
+            let canvas = Canvas::new_cpu(
+                u32::from(WIDTH) * u32::from(SCALE),
+                u32::from(HEIGHT) * u32::from(SCALE),
+                1.0,
+            )
+            .expect("CPU canvas");
+            canvas
+                .begin_cpu(Some(rgba(0, 0, 0, 255)))
+                .expect("begin frame");
+            canvas.scale(f32::from(SCALE), f32::from(SCALE));
+            if shell_only {
+                let preset = PRESETS[state.preset % PRESETS.len()];
+                draw_app_backdrop(&canvas, state, preset);
+            } else {
+                paint_scene(&canvas, state, f32::from(SCALE));
+            }
+            canvas.end();
+            let (_, _, stride, pixels) = canvas.read_pixels().expect("CPU pixels");
+            (stride as usize, pixels.to_vec())
+        }
+
+        let shell = VisualState {
+            width: f32::from(WIDTH),
+            height: f32::from(HEIGHT),
+            elapsed: 2.5,
+            preset: 3,
+            ..VisualState::default()
+        };
+        let mut staged = shell.clone();
+        staged.set_stage_viewport(Some((
+            f32::from(VIEWPORT.0),
+            f32::from(VIEWPORT.1),
+            f32::from(VIEWPORT.2),
+            f32::from(VIEWPORT.3),
+        )));
+
+        let (shell_stride, shell_pixels) = render(&shell, true);
+        let (staged_stride, staged_pixels) = render(&staged, false);
+        assert_eq!(shell_stride, staged_stride);
+
+        let mut changed_inside = false;
+        for y in 0..HEIGHT * SCALE {
+            for x in 0..WIDTH * SCALE {
+                let offset = usize::from(y) * shell_stride + usize::from(x) * 4;
+                let shell_pixel = &shell_pixels[offset..offset + 4];
+                let staged_pixel = &staged_pixels[offset..offset + 4];
+                let inside = x >= VIEWPORT.0 * SCALE
+                    && x < (VIEWPORT.0 + VIEWPORT.2) * SCALE
+                    && y >= VIEWPORT.1 * SCALE
+                    && y < (VIEWPORT.1 + VIEWPORT.3) * SCALE;
+                if inside {
+                    changed_inside |= shell_pixel != staged_pixel;
+                } else {
+                    assert_eq!(shell_pixel, staged_pixel, "stage leaked at ({x}, {y})");
+                }
+            }
+        }
+        assert!(changed_inside, "stage did not render inside its viewport");
+    }
+
+    #[test]
+    fn full_screen_background_matches_an_equal_sized_stage() {
+        fn render(state: &VisualState) -> Vec<u8> {
+            let canvas = Canvas::new_cpu(240, 140, 1.0).expect("CPU canvas");
+            canvas
+                .begin_cpu(Some(rgba(0, 0, 0, 255)))
+                .expect("begin frame");
+            paint_scene(&canvas, state, 1.0);
+            canvas.end();
+            let (_, _, _, pixels) = canvas.read_pixels().expect("CPU pixels");
+            pixels.to_vec()
+        }
+
+        let full_screen = VisualState {
+            width: 240.0,
+            height: 140.0,
+            elapsed: 3.4,
+            features: AudioFeatures {
+                energy: 0.62,
+                peak: 0.74,
+                loudness_db: -12.0,
+                bass: 0.70,
+                mid: 0.52,
+                treble: 0.44,
+                spectral_centroid_hz: 3_800.0,
+                dominant_frequency_hz: 440.0,
+                pitch_hz: 440.0,
+                pitch_confidence: 0.94,
+                spectral_flux: 0.20,
+                onset: 0.46,
+                spectrum: [0.38; SPECTRUM_BANDS],
+                ..AudioFeatures::default()
+            },
+            preset: 3,
+            transition: 0.35,
+            ..VisualState::default()
+        };
+        let mut staged = full_screen.clone();
+        staged.set_stage_viewport(Some((0.0, 0.0, 240.0, 140.0)));
+
+        assert_eq!(render(&full_screen), render(&staged));
+    }
+
+    #[test]
+    fn atmosphere_radius_keeps_its_horizontal_spread_across_common_aspect_ratios() {
+        let stage_radius = atmosphere_source_radius(790.0, 1_150.0, 0.48);
+        let window_radius = atmosphere_source_radius(1_792.0, 1_440.0, 0.48);
+        assert!((stage_radius / 790.0 - 0.48).abs() < f32::EPSILON);
+        assert!((window_radius / 1_792.0 - 0.48).abs() < f32::EPSILON);
+
+        let ultrawide_radius = atmosphere_source_radius(2_560.0, 1_080.0, 0.48);
+        assert!((ultrawide_radius - 1_080.0 * 1.7 * 0.48).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn atmosphere_normalization_preserves_off_window_sources_and_caps_cost() {
+        let mut source = AtmosphereSource {
+            x: -1.25,
+            y: 1.4,
+            radius: f32::INFINITY,
+            aspect: 12.0,
+            rotation: f32::NEG_INFINITY,
+            intensity: 9.0,
+            hue: -0.2,
+            saturation: 4.0,
+            drift: 0.8,
+            audio_intensity: 8.0,
+            audio_scale: -4.0,
+            ..AtmosphereSource::default()
+        };
+        let mut atmosphere = Atmosphere {
+            sources: vec![source.clone(); MAX_ATMOSPHERE_SOURCES + 2],
+            ..Atmosphere::default()
+        }
+        .normalized();
+
+        assert_eq!(atmosphere.sources.len(), MAX_ATMOSPHERE_SOURCES);
+        source = atmosphere.sources.remove(0);
+        assert!((source.x + 1.25).abs() < f32::EPSILON);
+        assert!((source.y - 1.4).abs() < f32::EPSILON);
+        assert!((source.radius - AtmosphereSource::default().radius).abs() < f32::EPSILON);
+        assert!((source.aspect - 4.0).abs() < f32::EPSILON);
+        assert!((source.rotation - AtmosphereSource::default().rotation).abs() < f32::EPSILON);
+        assert!((source.intensity - 2.0).abs() < f32::EPSILON);
+        assert!((source.hue - 0.8).abs() < f32::EPSILON);
+        assert!((source.saturation - 1.0).abs() < f32::EPSILON);
+        assert!((source.drift - 0.18).abs() < f32::EPSILON);
+        assert!((source.audio_intensity - 1.5).abs() < f32::EPSILON);
+        assert!(source.audio_scale.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn atmosphere_audio_response_is_per_source_and_bounded() {
+        let features = AudioFeatures {
+            energy: 0.62,
+            bass: 0.81,
+            mid: 0.47,
+            treble: 1.4,
+            onset: f32::NAN,
+            ..AudioFeatures::default()
+        };
+
+        assert!(
+            atmosphere_audio_drive(&features, AtmosphereAudioResponse::None).abs() < f32::EPSILON
+        );
+        assert!(
+            (atmosphere_audio_drive(&features, AtmosphereAudioResponse::Energy) - 0.62).abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (atmosphere_audio_drive(&features, AtmosphereAudioResponse::Bass) - 0.81).abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (atmosphere_audio_drive(&features, AtmosphereAudioResponse::Mid) - 0.47).abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (atmosphere_audio_drive(&features, AtmosphereAudioResponse::Treble) - 1.0).abs()
+                < f32::EPSILON
+        );
+        assert!(
+            atmosphere_audio_drive(&features, AtmosphereAudioResponse::Onset).abs() < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn off_window_atmosphere_source_contributes_only_its_visible_tail() {
+        fn render(atmosphere: Atmosphere) -> Vec<u8> {
+            let canvas = Canvas::new_cpu(180, 120, 1.0).expect("CPU canvas");
+            canvas
+                .begin_cpu(Some(rgba(0, 0, 0, 255)))
+                .expect("begin frame");
+            let state = VisualState {
+                width: 180.0,
+                height: 120.0,
+                atmosphere: Arc::new(atmosphere),
+                ..VisualState::default()
+            };
+            draw_backdrop(&canvas, &state, PRESETS[0]);
+            canvas.end();
+            let (_, _, _, pixels) = canvas.read_pixels().expect("CPU pixels");
+            pixels.to_vec()
+        }
+
+        let dark = render(Atmosphere {
+            sources: Vec::new(),
+            ..Atmosphere::default()
+        });
+        let lit = render(Atmosphere {
+            sources: vec![AtmosphereSource {
+                x: -0.18,
+                y: 0.5,
+                radius: 0.55,
+                intensity: 1.5,
+                palette: AtmospherePalette::Custom,
+                hue: 0.55,
+                ..AtmosphereSource::default()
+            }],
+            ..Atmosphere::default()
+        });
+
+        assert_ne!(dark, lit);
+    }
+
+    #[test]
+    fn atmosphere_shapes_and_rotation_produce_distinct_footprints() {
+        fn render(shape: AtmosphereSourceShape, rotation: f32) -> Vec<u8> {
+            let canvas = Canvas::new_cpu(180, 120, 1.0).expect("CPU canvas");
+            canvas
+                .begin_cpu(Some(rgba(0, 0, 0, 255)))
+                .expect("begin frame");
+            let state = VisualState {
+                width: 180.0,
+                height: 120.0,
+                atmosphere: Arc::new(Atmosphere {
+                    sources: vec![AtmosphereSource {
+                        x: 0.5,
+                        y: 0.5,
+                        radius: 0.22,
+                        shape,
+                        aspect: 2.8,
+                        rotation,
+                        intensity: 1.6,
+                        palette: AtmospherePalette::Custom,
+                        hue: 0.58,
+                        audio_response: AtmosphereAudioResponse::None,
+                        ..AtmosphereSource::default()
+                    }],
+                    ..Atmosphere::default()
+                }),
+                ..VisualState::default()
+            };
+            draw_backdrop(&canvas, &state, PRESETS[0]);
+            canvas.end();
+            let (_, _, _, pixels) = canvas.read_pixels().expect("CPU pixels");
+            pixels.to_vec()
+        }
+
+        let circle = render(AtmosphereSourceShape::Circle, 0.0);
+        let oval = render(AtmosphereSourceShape::Oval, 0.0);
+        let vertical_oval = render(AtmosphereSourceShape::Oval, 0.25);
+        let beam = render(AtmosphereSourceShape::Beam, 0.0);
+
+        assert_ne!(circle, oval);
+        assert_ne!(oval, vertical_oval);
+        assert_ne!(oval, beam);
+    }
+
+    #[test]
+    fn hidden_composition_leaves_custom_atmosphere_independent_of_preset() {
+        fn render(preset: usize) -> Vec<u8> {
+            let canvas = Canvas::new_cpu(180, 120, 1.0).expect("CPU canvas");
+            canvas
+                .begin_cpu(Some(rgba(0, 0, 0, 255)))
+                .expect("begin frame");
+            let state = VisualState {
+                width: 180.0,
+                height: 120.0,
+                preset,
+                atmosphere: Arc::new(Atmosphere {
+                    composition_visible: false,
+                    sources: vec![AtmosphereSource {
+                        palette: AtmospherePalette::Custom,
+                        hue: 0.12,
+                        ..AtmosphereSource::default()
+                    }],
+                    ..Atmosphere::default()
+                }),
+                ..VisualState::default()
+            };
+            draw_stage(&canvas, &state, PRESETS[preset]);
+            canvas.end();
+            let (_, _, _, pixels) = canvas.read_pixels().expect("CPU pixels");
+            pixels.to_vec()
+        }
+
+        assert_eq!(render(0), render(4));
+    }
+
+    #[test]
+    fn hsl_conversion_has_stable_primary_colours() {
+        assert_eq!(hsl_to_rgb(0.0, 1.0, 0.5), [255, 0, 0]);
+        assert_eq!(hsl_to_rgb(1.0 / 3.0, 1.0, 0.5), [0, 255, 0]);
+        assert_eq!(hsl_to_rgb(2.0 / 3.0, 1.0, 0.5), [0, 0, 255]);
+    }
+
+    fn material_key(kind: AtmosphereFieldKind) -> MaterialTextureKey {
+        MaterialTextureKey {
+            width: 96,
+            height: 64,
+            field: AtmosphereField {
+                kind,
+                ..AtmosphereField::default()
+            },
+            anchors: Atmosphere::default()
+                .sources
+                .iter()
+                .map(MaterialAnchor::from)
+                .collect(),
+            preset_accent: PRESETS[2].accent,
+            preset_secondary: PRESETS[2].secondary,
+        }
+    }
+
+    #[test]
+    fn material_textures_are_bounded_deterministic_and_premultiplied() {
+        assert_eq!(material_texture_dimensions(2_560.0, 1_080.0), (512, 224));
+        assert_eq!(material_texture_dimensions(800.0, 1_200.0), (341, 512));
+
+        let watercolor_key = material_key(AtmosphereFieldKind::Watercolor);
+        let caustics_key = material_key(AtmosphereFieldKind::Caustics);
+        let watercolor = generate_material_texture(&watercolor_key);
+        let repeated = generate_material_texture(&watercolor_key);
+        let caustics = generate_material_texture(&caustics_key);
+
+        assert_eq!(watercolor, repeated);
+        assert_ne!(watercolor, caustics);
+        assert!(watercolor.chunks_exact(4).any(|pixel| pixel[3] > 0));
+        assert!(caustics.chunks_exact(4).any(|pixel| pixel[3] > 0));
+        for pixel in watercolor.chunks_exact(4).chain(caustics.chunks_exact(4)) {
+            assert!(pixel[0] <= pixel[3]);
+            assert!(pixel[1] <= pixel[3]);
+            assert!(pixel[2] <= pixel[3]);
+        }
+    }
+
+    #[test]
+    fn material_configuration_changes_regenerate_the_field() {
+        let first = material_key(AtmosphereFieldKind::Watercolor);
+        let mut changed_seed = first.clone();
+        changed_seed.field.seed ^= 0xFFFF_0000;
+        let mut moved_source = first.clone();
+        moved_source.anchors[0].x = -0.4;
+
+        assert_ne!(
+            generate_material_texture(&first),
+            generate_material_texture(&changed_seed)
+        );
+        assert_ne!(
+            generate_material_texture(&first),
+            generate_material_texture(&moved_source)
+        );
+    }
+
+    #[test]
+    fn material_settings_are_normalized_to_safe_ranges() {
+        let normalized = AtmosphereField {
+            intensity: 9.0,
+            scale: 0.0,
+            motion: f32::INFINITY,
+            hue: -0.25,
+            saturation: 3.0,
+            ..AtmosphereField::default()
+        }
+        .normalized();
+        assert!((normalized.intensity - 1.5).abs() < f32::EPSILON);
+        assert!((normalized.scale - 0.45).abs() < f32::EPSILON);
+        assert!((normalized.motion - AtmosphereField::default().motion).abs() < f32::EPSILON);
+        assert!((normalized.hue - 0.75).abs() < f32::EPSILON);
+        assert!((normalized.saturation - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1043,6 +2551,26 @@ mod tests {
 
         state.transition = 0.0;
         assert!(!state.needs_animation_frame());
+
+        state.atmosphere = Arc::new(Atmosphere {
+            sources: vec![AtmosphereSource {
+                drift: 0.02,
+                ..AtmosphereSource::default()
+            }],
+            ..Atmosphere::default()
+        });
+        assert!(state.needs_animation_frame());
+
+        state.atmosphere = Arc::new(Atmosphere {
+            field: AtmosphereField {
+                kind: AtmosphereFieldKind::Caustics,
+                motion: 0.4,
+                ..AtmosphereField::default()
+            },
+            sources: Vec::new(),
+            ..Atmosphere::default()
+        });
+        assert!(state.needs_animation_frame());
     }
 
     #[test]
@@ -1071,5 +2599,40 @@ mod tests {
         assert!((tuning.motion - 0.35).abs() < f32::EPSILON);
         assert!((tuning.depth - 1.50).abs() < f32::EPSILON);
         assert!((tuning.glow - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn metric_ranges_match_the_feature_contract() {
+        let metrics = normalized_audio_metrics(&AudioFeatures {
+            loudness_db: -30.0,
+            pitch_hz: 1_200.0,
+            pitch_confidence: 0.9,
+            spectral_centroid_hz: 45.0,
+            onset: 0.25,
+            ..AudioFeatures::default()
+        });
+        assert!((0.5..0.6).contains(&metrics[0]));
+        assert!((metrics[1] - 1.0).abs() < f32::EPSILON);
+        assert!(metrics[2].abs() < f32::EPSILON);
+        assert!((metrics[3] - 0.5).abs() < f32::EPSILON);
+
+        let uncertain_pitch = normalized_audio_metrics(&AudioFeatures {
+            pitch_hz: 440.0,
+            pitch_confidence: 0.2,
+            ..AudioFeatures::default()
+        });
+        assert!(uncertain_pitch[1].abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn metric_release_accelerates_under_gravity() {
+        let mut metric = BallisticMetric::default();
+        metric.update(1.0, 0.0, 3.0, 6.0, 1.0 / 60.0);
+        metric.update(0.0, 0.0, 3.0, 6.0, 0.05);
+        let first_drop = 1.0 - metric.level;
+        let before_second_drop = metric.level;
+        metric.update(0.0, 0.0, 3.0, 6.0, 0.05);
+        let second_drop = before_second_drop - metric.level;
+        assert!(second_drop > first_drop);
     }
 }

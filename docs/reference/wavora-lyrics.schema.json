@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/ming2k/wavora/main/docs/reference/wavora-lyrics.schema.json",
+  "title": "Wavora Lyrics Format 1.x",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["format", "version", "tracks", "cues"],
+  "properties": {
+    "$schema": { "type": "string", "format": "uri" },
+    "format": { "const": "wavora-lyrics" },
+    "version": { "type": "string", "pattern": "^1\\.[0-9]+$" },
+    "required_features": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "offset_ms": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "media": { "$ref": "#/$defs/media" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "tracks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/track" }
+    },
+    "cues": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20000,
+      "items": { "$ref": "#/$defs/cue" }
+    }
+  },
+  "$defs": {
+    "media": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "duration_ms": { "$ref": "#/$defs/milliseconds" },
+        "fingerprints": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/fingerprint" }
+        }
+      }
+    },
+    "fingerprint": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": { "$ref": "#/$defs/identifier" },
+        "value": { "$ref": "#/$defs/text" }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "title": { "$ref": "#/$defs/text" },
+        "artist": { "$ref": "#/$defs/text" },
+        "album": { "$ref": "#/$defs/text" },
+        "contributors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/contributor" }
+        },
+        "source": { "$ref": "#/$defs/source" },
+        "rights": { "$ref": "#/$defs/rights" }
+      }
+    },
+    "contributor": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "role"],
+      "properties": {
+        "name": { "$ref": "#/$defs/text" },
+        "role": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": { "$ref": "#/$defs/text" },
+        "uri": { "type": "string", "format": "uri" }
+      },
+      "anyOf": [
+        { "required": ["name"] },
+        { "required": ["uri"] }
+      ]
+    },
+    "rights": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "copyright": { "$ref": "#/$defs/text" },
+        "license": { "$ref": "#/$defs/text" },
+        "license_uri": { "type": "string", "format": "uri" }
+      },
+      "anyOf": [
+        { "required": ["copyright"] },
+        { "required": ["license"] },
+        { "required": ["license_uri"] }
+      ]
+    },
+    "track": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "role"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "role": { "$ref": "#/$defs/identifier" },
+        "label": { "$ref": "#/$defs/text" },
+        "language": { "$ref": "#/$defs/languageTag" },
+        "direction": { "$ref": "#/$defs/direction" }
+      }
+    },
+    "cue": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "track_id", "start_ms", "texts"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "track_id": { "$ref": "#/$defs/identifier" },
+        "start_ms": { "$ref": "#/$defs/milliseconds" },
+        "end_ms": { "$ref": "#/$defs/milliseconds" },
+        "texts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/textVariant" }
+        }
+      }
+    },
+    "textVariant": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind", "text"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/identifier" },
+        "language": { "$ref": "#/$defs/languageTag" },
+        "direction": { "$ref": "#/$defs/direction" },
+        "text": { "$ref": "#/$defs/text" },
+        "segments": {
+          "type": "array",
+          "maxItems": 2000,
+          "items": { "$ref": "#/$defs/segment" }
+        }
+      }
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["start_ms", "end_ms", "text"],
+      "properties": {
+        "start_ms": { "$ref": "#/$defs/milliseconds" },
+        "end_ms": { "$ref": "#/$defs/milliseconds" },
+        "text": { "$ref": "#/$defs/segmentText" }
+      }
+    },
+    "milliseconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "languageTag": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9-]+$"
+    },
+    "direction": {
+      "enum": ["auto", "ltr", "rtl"]
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+    },
+    "segmentText": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+    }
+  }
+}

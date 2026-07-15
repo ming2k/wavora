@@ -1,17 +1,18 @@
 [package]
-name = "wavora-visuals"
+name = "wavora-library"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Audio-reactive Flux visual engines for Wavora"
+description = "Persistent local-media identity and playlist catalog for Wavora"
 
 [dependencies]
-flux.workspace = true
-iris.workspace = true
-serde.workspace = true
-wavora-audio-analysis.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+wavora-core.workspace = true
+wavora-media.workspace = true
 
 [lints.rust]
 unsafe_code = "deny"

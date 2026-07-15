@@ -8,10 +8,15 @@ repository.workspace = true
 description = "Media discovery, decoding, playback, and PCM analysis for Wavora"
 
 [dependencies]
+blake3.workspace = true
 crossbeam-channel.workspace = true
 gstreamer = "0.25.2"
 gstreamer-app = "0.25.2"
 rodio = { version = "0.22.2", default-features = false, features = ["symphonia-all"] }
+rusty-chromaprint.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+symphonia.workspace = true
 thiserror.workspace = true
 walkdir.workspace = true
 wavora-audio-analysis.workspace = true

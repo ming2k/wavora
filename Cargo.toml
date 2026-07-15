@@ -4,6 +4,7 @@ members = [
     "crates/wavora-audio-analysis",
     "crates/wavora-core",
     "crates/wavora-i18n",
+    "crates/wavora-library",
     "crates/wavora-media",
     "crates/wavora-visuals",
 ]
@@ -18,14 +19,23 @@ repository = "https://github.com/ming2k/wavora"
 
 [workspace.dependencies]
 crossbeam-channel = "0.5.15"
+blake3 = "1.8.5"
 flux = { path = "../optics/bindings/flux-rs/crates/flux" }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 iris = { path = "../optics/bindings/iris-rs/crates/iris" }
+lens = { path = "../optics/bindings/lens-rs/crates/lens" }
+rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
+rusty-chromaprint = "=0.3.0"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+symphonia = { version = "0.5.5", default-features = false, features = ["flac", "isomp4", "mp3", "ogg", "wav"] }
 thiserror = "2.0.18"
+uuid = { version = "1.23.5", features = ["serde", "v4"] }
 walkdir = "2.5.0"
 wavora-audio-analysis = { path = "crates/wavora-audio-analysis" }
 wavora-core = { path = "crates/wavora-core" }
 wavora-i18n = { path = "crates/wavora-i18n" }
+wavora-library = { path = "crates/wavora-library" }
 wavora-media = { path = "crates/wavora-media" }
 wavora-visuals = { path = "crates/wavora-visuals" }
 
@@ -40,12 +50,16 @@ repository.workspace = true
 
 [dependencies]
 directories = "6.0.0"
+flux.workspace = true
+image.workspace = true
 iris.workspace = true
+lens.workspace = true
 serde.workspace = true
-serde_json = "1.0.149"
+serde_json.workspace = true
 thiserror.workspace = true
 wavora-core.workspace = true
 wavora-i18n.workspace = true
+wavora-library.workspace = true
 wavora-media.workspace = true
 wavora-visuals.workspace = true
 

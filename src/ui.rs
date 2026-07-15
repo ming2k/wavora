@@ -1,17 +1,25 @@
-use crate::app::{App, View};
-use iris::{Align, Color, Frame, Icon, LayoutOpts, TableColumn, TableOpts, Theme};
-use wavora_core::format_duration;
+use crate::app::{App, View, VisualInspectorTab};
+use iris::{
+    Align, Color, Frame, Icon, LayoutOpts, OverlayOpts, Rect, TableColumn, TableOpts, Theme,
+};
+use std::ffi::c_void;
+use wavora_core::{PlaybackMode, format_duration};
 use wavora_i18n::{Key, Language, LanguagePreference, text, visual_preset_text};
-use wavora_visuals::PRESETS;
+use wavora_visuals::{
+    AtmosphereAudioResponse, AtmosphereFalloff, AtmosphereFieldKind, AtmospherePalette,
+    AtmosphereSourceShape, MAX_ATMOSPHERE_SOURCES, PRESETS,
+};
 
 const ROOT_PAD: f32 = 18.0;
 const GAP: f32 = 14.0;
 const TOP_BAR_HEIGHT: f32 = 54.0;
 const COMPACT_NAV_HEIGHT: f32 = 46.0;
 const STATUS_HEIGHT: f32 = 40.0;
-const PLAYER_HEIGHT: f32 = 100.0;
-const VISUAL_RAIL_WIDTH: f32 = 236.0;
-const VISUAL_STAGE_GAP: f32 = 12.0;
+const PLAYER_HEIGHT: f32 = 112.0;
+const VISUAL_INSPECTOR_WIDTH: f32 = 304.0;
+const VISUAL_MIN_SIDE_STAGE_WIDTH: f32 = 480.0;
+const VISUAL_STAGE_GAP: f32 = 14.0;
+const VISUAL_COMPACT_STAGE_HEIGHT: f32 = 340.0;
 
 #[must_use]
 pub fn theme(preset: usize) -> Theme {
@@ -28,7 +36,7 @@ pub fn theme(preset: usize) -> Theme {
         .with_font_size(14.0)
         .with_corner_radius(12.0)
         .with_border_width(1.0)
-        .with_active_indicator_width(3.0)
+        .with_active_indicator_width(0.0)
         .with_scrollbar_width(8.0)
         .with_scrollbar_radius(4.0)
         .with_scrollbar_min_thumb_h(38.0)
@@ -38,7 +46,13 @@ pub fn theme(preset: usize) -> Theme {
         .with_scrollbar_thumb_active_color(Color::rgba(accent[0], accent[1], accent[2], 190))
 }
 
-pub fn build(app: &mut App, frame: &mut Frame, width: f32, height: f32) {
+pub fn build(
+    app: &mut App,
+    frame: &mut Frame,
+    width: f32,
+    height: f32,
+    artwork: Option<*mut c_void>,
+) {
     frame.set_theme(theme(app.preset));
     let show_sidebar = width >= 760.0;
     let show_queue = width >= 1_300.0;
@@ -88,9 +102,9 @@ pub fn build(app: &mut App, frame: &mut Frame, width: f32, height: f32) {
     if app.view == View::Visuals {
         let inner_width = (panel_width - 44.0).max(1.0);
         let inner_height = (content_height - 44.0).max(1.0);
-        let side_controls = inner_width >= 620.0;
+        let side_controls = uses_side_visual_layout(inner_width);
         let stage_width = if side_controls {
-            (inner_width - VISUAL_RAIL_WIDTH - VISUAL_STAGE_GAP).max(1.0)
+            side_visual_stage_width(inner_width)
         } else {
             inner_width
         };
@@ -144,7 +158,8 @@ pub fn build(app: &mut App, frame: &mut Frame, width: f32, height: f32) {
                     }
                 },
             );
-            player_bar(app, frame, width, language);
+            player_bar(app, frame, width, language, artwork);
+            playback_mode_toast(app, frame, width, height, language);
         },
     );
 }
@@ -206,6 +221,13 @@ fn compact_navigation(app: &mut App, frame: &mut Frame, language: Language) {
                 Icon::Star,
                 text(language, Key::Favorites),
                 View::Favorites,
+            );
+            compact_nav_item(
+                app,
+                frame,
+                Icon::BookOpen,
+                text(language, Key::Playlists),
+                View::Playlists,
             );
             compact_nav_item(
                 app,
@@ -295,6 +317,13 @@ fn sidebar(app: &mut App, frame: &mut Frame, language: Language) {
             nav_item(
                 app,
                 frame,
+                Icon::BookOpen,
+                text(language, Key::Playlists),
+                View::Playlists,
+            );
+            nav_item(
+                app,
+                frame,
                 Icon::Activity,
                 text(language, Key::VisualStage),
                 View::Visuals,
@@ -335,11 +364,7 @@ fn nav_item(app: &mut App, frame: &mut Frame, icon: Icon, label: &str, view: Vie
 }
 
 fn main_content(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: Language) {
-    let background = if app.view == View::Visuals {
-        Color::rgba(6, 9, 14, 92)
-    } else {
-        Color::rgba(8, 11, 16, 194)
-    };
+    let background = Color::rgba(7, 10, 15, content_surface_alpha(app.view));
     frame.column_ex(
         &LayoutOpts {
             flex: 1.0,
@@ -354,10 +379,20 @@ fn main_content(app: &mut App, frame: &mut Frame, width: f32, height: f32, langu
             View::Home => home(app, frame, width, language),
             View::Library => library(app, frame, false, width, height, language),
             View::Favorites => library(app, frame, true, width, height, language),
+            View::Playlists => playlists(app, frame, width, height, language),
+            View::Lyrics => lyrics(app, frame, width, height, language),
             View::Visuals => visuals(app, frame, width, height, language),
             View::Settings => settings(app, frame, width, language),
         },
     );
+}
+
+fn content_surface_alpha(view: View) -> u8 {
+    match view {
+        View::Visuals => 92,
+        View::Home => 128,
+        View::Library | View::Favorites | View::Playlists | View::Lyrics | View::Settings => 148,
+    }
 }
 
 fn home(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
@@ -575,15 +610,276 @@ fn library(
         && let Some(row) = result.selected
         && let Some(index) = visible.get(row).copied()
     {
-        app.play_index(index);
+        app.click_library_table_row(index, favorites_only);
+    }
+}
+
+fn playlists(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: Language) {
+    frame.row_ex(
+        &LayoutOpts {
+            height: 38.0,
+            cross: Align::Center,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            frame.heading(text(language, Key::Playlists), 1);
+            frame.flex(1.0);
+            frame.label_sized(
+                &format!(
+                    "{} {}",
+                    app.selected_playlist_tracks().len(),
+                    text(language, Key::Tracks)
+                ),
+                10.0,
+            );
+        },
+    );
+
+    frame.row_ex(
+        &LayoutOpts {
+            height: 38.0,
+            gap: 8.0,
+            cross: Align::Center,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            frame.flex(1.0);
+            frame.textfield(text(language, Key::NewPlaylist), &mut app.playlist_name);
+            frame.size_next(100.0, 38.0);
+            if frame.selectable(text(language, Key::CreatePlaylist), false) {
+                app.create_playlist();
+            }
+        },
+    );
+
+    let available_playlists = app.playlists().to_vec();
+    if available_playlists.is_empty() {
+        frame.flex(1.0);
+        frame.label_wrapped(text(language, Key::NoPlaylists), (width - 60.0).max(240.0));
+        return;
+    }
+
+    let labels = available_playlists
+        .iter()
+        .map(|playlist| playlist.name.as_str())
+        .collect::<Vec<_>>();
+    let mut selected = available_playlists
+        .iter()
+        .position(|playlist| Some(playlist.id) == app.selected_playlist_id())
+        .and_then(|index| i32::try_from(index).ok())
+        .unwrap_or_default();
+    if frame.dropdown(text(language, Key::Playlists), &mut selected, &labels)
+        && let Some(playlist) = usize::try_from(selected)
+            .ok()
+            .and_then(|index| available_playlists.get(index))
+    {
+        app.select_playlist(playlist.id);
+    }
+
+    frame.row_ex(
+        &LayoutOpts {
+            height: 36.0,
+            gap: 7.0,
+            cross: Align::Center,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            frame.flex(1.0);
+            if frame.selectable(text(language, Key::AddCurrentTrack), false) {
+                app.add_current_to_selected_playlist();
+            }
+            if frame.selectable(text(language, Key::RemoveFromPlaylist), false) {
+                app.remove_selected_playlist_entry();
+            }
+            if width >= 700.0 {
+                if frame.selectable(text(language, Key::MoveUp), false) {
+                    app.move_selected_playlist_entry(-1);
+                }
+                if frame.selectable(text(language, Key::MoveDown), false) {
+                    app.move_selected_playlist_entry(1);
+                }
+            }
+            frame.size_next(38.0, 32.0);
+            if frame.icon_button(Icon::Trash) {
+                app.delete_selected_playlist();
+            }
+        },
+    );
+
+    let columns = [
+        TableColumn {
+            title: text(language, Key::Title),
+            width: 0.0,
+            align: Align::Start,
+        },
+        TableColumn {
+            title: text(language, Key::Artist),
+            width: 180.0,
+            align: Align::Start,
+        },
+        TableColumn {
+            title: text(language, Key::Duration),
+            width: 72.0,
+            align: Align::End,
+        },
+    ];
+    let table_width = (width - 44.0).max(280.0);
+    let table_height = (height - 214.0).max(140.0);
+    let tracks = app.selected_playlist_tracks();
+    frame.size_next(table_width, table_height);
+    let result = frame.table(
+        "playlist-table",
+        &columns,
+        tracks.len(),
+        TableOpts {
+            row_height: 46.0,
+            show_header: true,
+            selectable: true,
+            zebra: true,
+        },
+        |row, column| {
+            let Some(track) = tracks.get(row) else {
+                return String::new();
+            };
+            match column {
+                0 if track.available => ellipsize(&track.title, 42),
+                0 => format!(
+                    "{} · {}",
+                    ellipsize(&track.title, 30),
+                    text(language, Key::MissingTrack)
+                ),
+                1 => ellipsize(&track.artist, 22),
+                2 => format_duration(track.duration_ms),
+                _ => String::new(),
+            }
+        },
+    );
+    if result.clicked
+        && let Some(row) = result.selected
+    {
+        app.click_playlist_table_row(row);
+    }
+}
+
+fn lyrics(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: Language) {
+    frame.row_ex(
+        &LayoutOpts {
+            height: 38.0,
+            gap: 8.0,
+            cross: Align::Center,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            frame.heading(text(language, Key::Lyrics), 1);
+            frame.flex(1.0);
+            frame.size_next(132.0, 34.0);
+            if frame.selectable(text(language, Key::ReloadLyrics), false) {
+                app.refresh_current_lyrics();
+            }
+        },
+    );
+    if let Some(track) = app.current_track() {
+        frame.label_sized(&ellipsize(&track.title, 64), 16.0);
+        frame.label_sized(&ellipsize(&track.artist, 48), 10.5);
+    }
+    let active = app.active_lyric_cues();
+    let source = app
+        .lyrics_path()
+        .map(|path| ellipsize(&path.display().to_string(), 96));
+    let Some(document) = app.lyrics() else {
+        frame.flex(1.0);
+        frame.label_sized(text(language, Key::NoLyrics), 16.0);
+        frame.label_wrapped_sized(
+            text(language, Key::LyricsSidecarHint),
+            11.0,
+            (width - 60.0).max(240.0),
+        );
+        return;
+    };
+    if let Some(source) = source {
+        frame.label_sized(&source, 9.0);
+    }
+    for cue in active.iter().filter_map(|index| document.cues.get(*index)) {
+        let accent = PRESETS[app.preset % PRESETS.len()].accent;
+        let current_height = lyric_cue_height(cue, true);
+        frame.size_next(0.0, current_height);
+        frame.column_ex(
+            &LayoutOpts {
+                height: current_height,
+                gap: 4.0,
+                pad: 12.0,
+                cross: Align::Stretch,
+                bg: Color::rgba(accent[0], accent[1], accent[2], 40),
+                radius: 14.0,
+                ..LayoutOpts::default()
+            },
+            |frame| {
+                if let Some(track) = document
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == cue.track_id)
+                {
+                    frame.label_sized(track.label.as_deref().unwrap_or(&track.role), 8.5);
+                }
+                lyric_cue_texts(frame, cue, (width - 90.0).max(220.0), true);
+            },
+        );
+    }
+    frame.separator();
+    frame.size_next((width - 44.0).max(280.0), (height - 220.0).max(160.0));
+    frame.scroll("lyrics-scroll", |frame| {
+        for (index, cue) in document.cues.iter().enumerate() {
+            let is_active = active.contains(&index);
+            let accent = PRESETS[app.preset % PRESETS.len()].accent;
+            let line_height = lyric_cue_height(cue, false);
+            frame.size_next(0.0, line_height);
+            frame.column_ex(
+                &LayoutOpts {
+                    height: line_height,
+                    gap: 4.0,
+                    pad: 10.0,
+                    cross: Align::Stretch,
+                    bg: if is_active {
+                        Color::rgba(accent[0], accent[1], accent[2], 34)
+                    } else {
+                        Color::rgba(255, 255, 255, 4)
+                    },
+                    radius: 12.0,
+                    ..LayoutOpts::default()
+                },
+                |frame| {
+                    lyric_cue_texts(frame, cue, (width - 86.0).max(220.0), is_active);
+                },
+            );
+            frame.spacer(4.0);
+        }
+    });
+}
+
+fn lyric_cue_height(cue: &wavora_core::LyricCue, current: bool) -> f32 {
+    let alternatives = cue.texts.len().saturating_sub(1);
+    let alternatives = f32::from(u16::try_from(alternatives).unwrap_or(16));
+    if current {
+        70.0 + alternatives * 22.0
+    } else {
+        50.0 + alternatives * 20.0
+    }
+}
+
+fn lyric_cue_texts(frame: &mut Frame, cue: &wavora_core::LyricCue, width: f32, active: bool) {
+    if let Some(original) = cue.original_text() {
+        frame.label_wrapped_sized(&original.text, if active { 18.0 } else { 13.0 }, width);
+    }
+    for text_variant in cue.texts.iter().filter(|text| text.kind != "original") {
+        frame.label_wrapped_sized(&text_variant.text, 10.5, width);
     }
 }
 
 fn visuals(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: Language) {
     let inner_width = (width - 44.0).max(1.0);
     let inner_height = (height - 44.0).max(1.0);
-    if inner_width >= 620.0 {
-        let stage_width = (inner_width - VISUAL_RAIL_WIDTH - VISUAL_STAGE_GAP).max(1.0);
+    if uses_side_visual_layout(inner_width) {
+        let stage_width = side_visual_stage_width(inner_width);
         frame.row_ex(
             &LayoutOpts {
                 flex: 1.0,
@@ -593,7 +889,7 @@ fn visuals(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: 
             },
             |frame| {
                 visual_stage(app, frame, stage_width, inner_height, language);
-                visual_controls(app, frame, VISUAL_RAIL_WIDTH, language);
+                visual_controls(app, frame, VISUAL_INSPECTOR_WIDTH, language);
             },
         );
     } else {
@@ -613,26 +909,42 @@ fn visuals(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: 
     }
 }
 
+fn uses_side_visual_layout(inner_width: f32) -> bool {
+    inner_width >= VISUAL_MIN_SIDE_STAGE_WIDTH + VISUAL_INSPECTOR_WIDTH + VISUAL_STAGE_GAP
+}
+
+fn side_visual_stage_width(inner_width: f32) -> f32 {
+    (inner_width - VISUAL_INSPECTOR_WIDTH - VISUAL_STAGE_GAP).max(1.0)
+}
+
 fn stacked_visual_stage_height(inner_height: f32) -> f32 {
-    (inner_height * 0.46).clamp(210.0, 300.0).min(inner_height)
+    (inner_height * 0.38).clamp(190.0, 260.0).min(inner_height)
+}
+
+fn uses_compact_visual_stage(height: f32) -> bool {
+    height < VISUAL_COMPACT_STAGE_HEIGHT
 }
 
 fn visual_stage(app: &App, frame: &mut Frame, width: f32, height: f32, language: Language) {
     let copy = visual_preset_text(language, app.preset);
     let features = app.live_audio_features();
+    let metric_motion = app.audio_metric_snapshot();
     let is_live = app.playback_state.is_playing();
+    let compact = uses_compact_visual_stage(height);
+    let stage_pad = if compact { 14.0 } else { 18.0 };
     frame.column_ex(
         &LayoutOpts {
-            flex: 1.0,
+            flex: 0.0,
             width,
             height,
-            gap: 6.0,
-            pad: 16.0,
+            gap: if compact { 5.0 } else { 8.0 },
+            pad: stage_pad,
             cross: Align::Stretch,
-            bg: Color::rgba(3, 6, 11, 42),
-            radius: 18.0,
+            bg: Color::rgba(3, 6, 11, 52),
+            radius: 20.0,
         },
         |frame| {
+            let accent = PRESETS[app.preset % PRESETS.len()].accent;
             frame.row_ex(
                 &LayoutOpts {
                     gap: 8.0,
@@ -640,26 +952,65 @@ fn visual_stage(app: &App, frame: &mut Frame, width: f32, height: f32, language:
                     ..LayoutOpts::default()
                 },
                 |frame| {
-                    frame.label_sized(text(language, Key::VisualPreview), 8.5);
+                    frame.label_compact_sized(text(language, Key::VisualPreview), 8.5);
                     frame.flex(1.0);
-                    frame.label_sized(
-                        if is_live {
-                            text(language, Key::Live)
-                        } else {
-                            text(language, Key::WaitingForAudio)
+                    frame.spacer(0.0);
+                    frame.row_ex(
+                        &LayoutOpts {
+                            height: 24.0,
+                            pad: 6.0,
+                            cross: Align::Center,
+                            bg: Color::rgba(accent[0], accent[1], accent[2], 28),
+                            radius: 12.0,
+                            ..LayoutOpts::default()
                         },
-                        8.5,
+                        |frame| {
+                            frame.label_compact_sized(
+                                if is_live {
+                                    text(language, Key::Live)
+                                } else {
+                                    text(language, Key::WaitingForAudio)
+                                },
+                                8.0,
+                            );
+                        },
                     );
                 },
             );
-            frame.label_sized(copy.name, if width >= 430.0 { 27.0 } else { 22.0 });
-            frame.label_wrapped_sized(copy.subtitle, 11.0, (width - 32.0).max(120.0));
-            frame.label_wrapped_sized(copy.response, 9.5, (width - 32.0).max(120.0));
+            frame.spacer(2.0);
+            frame.label_sized(
+                copy.name,
+                if compact {
+                    20.0
+                } else if width >= 430.0 {
+                    28.0
+                } else {
+                    22.0
+                },
+            );
+            frame.label_wrapped_sized(
+                copy.subtitle,
+                if compact { 9.5 } else { 11.0 },
+                (width - stage_pad * 2.0).max(120.0),
+            );
+            if !compact {
+                frame.column_ex(
+                    &LayoutOpts {
+                        gap: 2.0,
+                        pad: 10.0,
+                        cross: Align::Stretch,
+                        bg: Color::rgba(255, 255, 255, 7),
+                        radius: 12.0,
+                        ..LayoutOpts::default()
+                    },
+                    |frame| {
+                        frame.label_wrapped_sized(copy.response, 9.5, (width - 56.0).max(100.0));
+                    },
+                );
+            }
             frame.flex(1.0);
             frame.spacer(0.0);
-            if height >= 340.0 {
-                visual_metrics(frame, features, language);
-            } else {
+            if compact {
                 let pitch = if features.pitch_confidence > 0.2 {
                     format!("{:.0} Hz", features.pitch_hz)
                 } else {
@@ -675,14 +1026,30 @@ fn visual_stage(app: &App, frame: &mut Frame, width: f32, height: f32, language:
                         features.onset * 100.0
                     ),
                     9.0,
-                    (width - 32.0).max(120.0),
+                    (width - stage_pad * 2.0).max(120.0),
+                );
+            } else {
+                visual_metrics(
+                    frame,
+                    features,
+                    metric_motion,
+                    app.preset,
+                    (width - 36.0).max(1.0),
+                    language,
                 );
             }
         },
     );
 }
 
-fn visual_metrics(frame: &mut Frame, features: wavora_media::AudioFeatures, language: Language) {
+fn visual_metrics(
+    frame: &mut Frame,
+    features: wavora_media::AudioFeatures,
+    motion: wavora_visuals::AudioMetricSnapshot,
+    preset: usize,
+    width: f32,
+    language: Language,
+) {
     let pitch = if features.pitch_confidence > 0.2 {
         format!("{:.0} Hz", features.pitch_hz)
     } else {
@@ -700,29 +1067,70 @@ fn visual_metrics(frame: &mut Frame, features: wavora_media::AudioFeatures, lang
         text(language, Key::Centroid),
         text(language, Key::Onset),
     ];
+    let colors = metric_palette(preset);
+    let card_width = ((width - 18.0) / 4.0).max(1.0);
+    let track_width = (card_width - 16.0).max(1.0);
     frame.row_ex(
         &LayoutOpts {
-            height: 58.0,
+            height: 68.0,
             gap: 6.0,
             cross: Align::Stretch,
             ..LayoutOpts::default()
         },
         |frame| {
-            for (label, value) in labels.into_iter().zip(values) {
+            for (index, (label, value)) in labels.into_iter().zip(values).enumerate() {
+                let level = motion.levels[index].clamp(0.0, 1.0);
+                let pulse = motion.pulses[index].clamp(0.0, 1.0);
+                let color = colors[index];
                 frame.flex(1.0);
                 frame.column_ex(
                     &LayoutOpts {
                         flex: 1.0,
-                        height: 58.0,
-                        gap: 2.0,
+                        height: 68.0,
+                        gap: 3.0,
                         pad: 8.0,
-                        bg: Color::rgba(255, 255, 255, 12),
+                        bg: Color::rgba(
+                            color[0],
+                            color[1],
+                            color[2],
+                            metric_alpha(10.0 + pulse * 13.0),
+                        ),
                         radius: 11.0,
                         ..LayoutOpts::default()
                     },
                     |frame| {
-                        frame.label_compact_sized(label, 8.0);
+                        frame.label_compact_sized(label, 7.5);
                         frame.label_compact_sized(&value, 10.0);
+                        frame.flex(1.0);
+                        frame.row_ex(
+                            &LayoutOpts {
+                                width: track_width,
+                                height: 7.0,
+                                bg: Color::rgba(255, 255, 255, 16),
+                                radius: 3.5,
+                                ..LayoutOpts::default()
+                            },
+                            |frame| {
+                                let fill_width = track_width * level;
+                                if fill_width >= 0.5 {
+                                    frame.row_ex(
+                                        &LayoutOpts {
+                                            width: fill_width,
+                                            height: 7.0,
+                                            bg: Color::rgba(
+                                                color[0],
+                                                color[1],
+                                                color[2],
+                                                metric_alpha(168.0 + pulse * 87.0),
+                                            ),
+                                            radius: 3.5,
+                                            ..LayoutOpts::default()
+                                        },
+                                        |_| {},
+                                    );
+                                }
+                            },
+                        );
                     },
                 );
             }
@@ -730,16 +1138,40 @@ fn visual_metrics(frame: &mut Frame, features: wavora_media::AudioFeatures, lang
     );
 }
 
+fn metric_palette(preset: usize) -> [[u8; 3]; 4] {
+    let preset = PRESETS[preset % PRESETS.len()];
+    [
+        preset.accent,
+        mix_rgb(preset.accent, preset.secondary, 36),
+        preset.secondary,
+        mix_rgb(preset.secondary, [255, 255, 255], 24),
+    ]
+}
+
+fn mix_rgb(left: [u8; 3], right: [u8; 3], right_percent: u16) -> [u8; 3] {
+    let right_percent = right_percent.min(100);
+    let left_percent = 100 - right_percent;
+    std::array::from_fn(|index| {
+        let mixed = u16::from(left[index]) * left_percent + u16::from(right[index]) * right_percent;
+        u8::try_from((mixed + 50) / 100).unwrap_or(255)
+    })
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn metric_alpha(value: f32) -> u8 {
+    value.clamp(0.0, 255.0).round() as u8
+}
+
 fn visual_controls(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
     frame.column_ex(
         &LayoutOpts {
             flex: 1.0,
             width,
-            gap: 7.0,
+            gap: 10.0,
             pad: 14.0,
             cross: Align::Stretch,
-            bg: Color::rgba(5, 8, 13, 224),
-            radius: 18.0,
+            bg: Color::rgba(5, 8, 13, 255),
+            radius: 20.0,
             ..LayoutOpts::default()
         },
         |frame| {
@@ -752,47 +1184,545 @@ fn visual_controls(app: &mut App, frame: &mut Frame, width: f32, language: Langu
                 },
                 9.0,
             );
-            frame.separator();
-            frame.flex(1.0);
-            frame.scroll("visual-control-scroll", |frame| {
-                frame.label_sized(text(language, Key::VisualPresets), 8.5);
-                for index in 0..PRESETS.len() {
-                    let copy = visual_preset_text(language, index);
-                    frame.size_next(0.0, 36.0);
-                    if frame.selectable(copy.name, app.preset == index) {
-                        app.set_preset(index);
-                    }
-                }
-                frame.spacer(5.0);
-                frame.separator();
-                frame.spacer(5.0);
-                let mut changed = false;
-                frame.label_sized(text(language, Key::Intensity), 8.5);
-                changed |= frame.slider(
-                    "##visual-intensity",
-                    &mut app.visual_tuning.intensity,
-                    0.45,
-                    1.75,
-                );
-                frame.label_sized(text(language, Key::Motion), 8.5);
-                changed |=
-                    frame.slider("##visual-motion", &mut app.visual_tuning.motion, 0.35, 1.65);
-                frame.label_sized(text(language, Key::Depth), 8.5);
-                changed |= frame.slider("##visual-depth", &mut app.visual_tuning.depth, 0.50, 1.50);
-                frame.label_sized(text(language, Key::Glow), 8.5);
-                changed |= frame.slider("##visual-glow", &mut app.visual_tuning.glow, 0.25, 1.50);
-                if changed {
-                    app.apply_visual_tuning();
-                }
-                frame.spacer(8.0);
-                frame.label_wrapped_sized(
-                    text(language, Key::VisualFootnote),
-                    8.5,
-                    (width - 28.0).max(120.0),
-                );
+            let mut active_tab = match app.visual_inspector_tab {
+                VisualInspectorTab::Composition => 0,
+                VisualInspectorTab::Atmosphere => 1,
+            };
+            frame.size_next((width - 28.0).max(1.0), 0.0);
+            frame.tabs("visual-inspector-tabs", &mut active_tab, |frame| {
+                frame.flex(1.0);
+                let _ = frame.tab(text(language, Key::Composition));
+                frame.flex(1.0);
+                let _ = frame.tab(text(language, Key::Atmosphere));
             });
+            app.visual_inspector_tab = if active_tab == 1 {
+                VisualInspectorTab::Atmosphere
+            } else {
+                VisualInspectorTab::Composition
+            };
+            frame.flex(1.0);
+            match app.visual_inspector_tab {
+                VisualInspectorTab::Composition => {
+                    frame.scroll("visual-composition-scroll", |frame| {
+                        composition_controls(app, frame, width, language);
+                    });
+                }
+                VisualInspectorTab::Atmosphere => {
+                    frame.scroll("visual-atmosphere-scroll", |frame| {
+                        atmosphere_controls(app, frame, width, language);
+                    });
+                }
+            }
         },
     );
+}
+
+fn inspector_section<R>(frame: &mut Frame, title: &str, body: impl FnOnce(&mut Frame) -> R) -> R {
+    frame.column_ex(
+        &LayoutOpts {
+            gap: 8.0,
+            pad: 12.0,
+            cross: Align::Stretch,
+            bg: Color::rgba(255, 255, 255, 8),
+            radius: 14.0,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            frame.label_sized(title, 8.5);
+            frame.separator();
+            body(frame)
+        },
+    )
+}
+
+fn inspector_group(frame: &mut Frame, title: &str) {
+    frame.spacer(4.0);
+    frame.label_sized(title, 8.0);
+}
+
+fn inspector_slider(
+    frame: &mut Frame,
+    label: &str,
+    id: &str,
+    value: &mut f32,
+    min: f32,
+    max: f32,
+) -> bool {
+    let readout = format!("{value:.2}");
+    frame.row_ex(
+        &LayoutOpts {
+            height: 18.0,
+            gap: 6.0,
+            cross: Align::Center,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            frame.label_compact_sized(label, 8.5);
+            frame.flex(1.0);
+            frame.spacer(0.0);
+            frame.label_compact_sized(&readout, 8.0);
+        },
+    );
+    frame.slider(id, value, min, max)
+}
+
+fn inspector_note(frame: &mut Frame, copy: &str, width: f32) {
+    frame.column_ex(
+        &LayoutOpts {
+            pad: 10.0,
+            cross: Align::Stretch,
+            bg: Color::rgba(255, 255, 255, 5),
+            radius: 12.0,
+            ..LayoutOpts::default()
+        },
+        |frame| frame.label_wrapped_sized(copy, 8.5, (width - 48.0).max(120.0)),
+    );
+}
+
+fn composition_controls(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
+    inspector_section(frame, text(language, Key::VisualPresets), |frame| {
+        let preset_names = (0..PRESETS.len())
+            .map(|index| visual_preset_text(language, index).name)
+            .collect::<Vec<_>>();
+        let mut selected = i32::try_from(app.preset).unwrap_or_default();
+        if frame.dropdown(
+            text(language, Key::Composition),
+            &mut selected,
+            &preset_names,
+        ) {
+            app.set_preset(usize::try_from(selected).unwrap_or_default());
+        }
+        let copy = visual_preset_text(language, app.preset);
+        frame.label_wrapped_sized(copy.subtitle, 9.5, (width - 52.0).max(120.0));
+    });
+    frame.spacer(10.0);
+    inspector_section(frame, text(language, Key::ResponseTuning), |frame| {
+        let copy = visual_preset_text(language, app.preset);
+        frame.label_wrapped_sized(copy.response, 8.5, (width - 52.0).max(120.0));
+        let mut changed = false;
+        changed |= inspector_slider(
+            frame,
+            text(language, Key::Intensity),
+            "##composition-intensity",
+            &mut app.visual_tuning.intensity,
+            0.45,
+            1.75,
+        );
+        changed |= inspector_slider(
+            frame,
+            text(language, Key::Motion),
+            "##composition-motion",
+            &mut app.visual_tuning.motion,
+            0.35,
+            1.65,
+        );
+        changed |= inspector_slider(
+            frame,
+            text(language, Key::Depth),
+            "##composition-depth",
+            &mut app.visual_tuning.depth,
+            0.50,
+            1.50,
+        );
+        changed |= inspector_slider(
+            frame,
+            text(language, Key::Glow),
+            "##composition-glow",
+            &mut app.visual_tuning.glow,
+            0.25,
+            1.50,
+        );
+        if changed {
+            app.apply_visual_tuning();
+        }
+    });
+    frame.spacer(10.0);
+    inspector_note(frame, text(language, Key::VisualFootnote), width);
+}
+
+fn atmosphere_controls(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
+    let layer_changed = inspector_section(frame, text(language, Key::SceneLayers), |frame| {
+        let mut changed = false;
+        changed |= frame.checkbox(
+            text(language, Key::AtmosphereEnabled),
+            &mut app.atmosphere.enabled,
+        );
+        changed |= frame.checkbox(
+            text(language, Key::CompositionVisible),
+            &mut app.atmosphere.composition_visible,
+        );
+        changed
+    });
+    if layer_changed {
+        app.apply_atmosphere();
+    }
+
+    frame.spacer(10.0);
+    inspector_section(frame, text(language, Key::Material), |frame| {
+        material_controls(app, frame, language);
+    });
+
+    frame.spacer(10.0);
+    inspector_section(frame, text(language, Key::LightSources), |frame| {
+        light_source_controls(app, frame, width, language);
+    });
+
+    frame.spacer(10.0);
+    inspector_note(frame, text(language, Key::AtmosphereHint), width);
+}
+
+fn material_controls(app: &mut App, frame: &mut Frame, language: Language) {
+    let changed = {
+        let field = &mut app.atmosphere.field;
+        let mut changed = false;
+        let mut kind = match field.kind {
+            AtmosphereFieldKind::None => 0,
+            AtmosphereFieldKind::Watercolor => 1,
+            AtmosphereFieldKind::Caustics => 2,
+        };
+        if frame.dropdown(
+            text(language, Key::MaterialField),
+            &mut kind,
+            &[
+                text(language, Key::NoMaterial),
+                text(language, Key::Watercolor),
+                text(language, Key::Caustics),
+            ],
+        ) {
+            field.kind = match kind {
+                1 => AtmosphereFieldKind::Watercolor,
+                2 => AtmosphereFieldKind::Caustics,
+                _ => AtmosphereFieldKind::None,
+            };
+            changed = true;
+        }
+        if field.kind != AtmosphereFieldKind::None {
+            changed |= inspector_slider(
+                frame,
+                text(language, Key::Strength),
+                "##material-strength",
+                &mut field.intensity,
+                0.0,
+                1.5,
+            );
+            changed |= inspector_slider(
+                frame,
+                text(language, Key::TextureScale),
+                "##material-scale",
+                &mut field.scale,
+                0.45,
+                2.2,
+            );
+            changed |= inspector_slider(
+                frame,
+                text(language, Key::FieldMotion),
+                "##material-motion",
+                &mut field.motion,
+                0.0,
+                1.0,
+            );
+            if frame.button(text(language, Key::NewVariation)) {
+                field.seed = field.seed.wrapping_mul(0x9E37_79B9).rotate_left(13) ^ 0xA341_316C;
+                changed = true;
+            }
+            let mut palette = match field.palette {
+                AtmospherePalette::Preset => 0,
+                AtmospherePalette::Custom => 1,
+            };
+            if frame.dropdown(
+                text(language, Key::Palette),
+                &mut palette,
+                &[
+                    text(language, Key::FollowPreset),
+                    text(language, Key::CustomColor),
+                ],
+            ) {
+                field.palette = if palette == 0 {
+                    AtmospherePalette::Preset
+                } else {
+                    AtmospherePalette::Custom
+                };
+                changed = true;
+            }
+            if field.palette == AtmospherePalette::Custom {
+                changed |= inspector_slider(
+                    frame,
+                    text(language, Key::Hue),
+                    "##material-hue",
+                    &mut field.hue,
+                    0.0,
+                    1.0,
+                );
+                changed |= inspector_slider(
+                    frame,
+                    text(language, Key::Saturation),
+                    "##material-saturation",
+                    &mut field.saturation,
+                    0.0,
+                    1.0,
+                );
+            }
+        }
+        changed
+    };
+    if changed {
+        app.apply_atmosphere();
+    }
+}
+
+fn light_source_controls(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
+    if !app.atmosphere.sources.is_empty() {
+        let source_names = (0..app.atmosphere.sources.len())
+            .map(|index| format!("{} {}", text(language, Key::LightSource), index + 1))
+            .collect::<Vec<_>>();
+        let source_labels = source_names.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut selected = i32::try_from(app.selected_atmosphere_source).unwrap_or_default();
+        if frame.dropdown(
+            text(language, Key::LightSource),
+            &mut selected,
+            &source_labels,
+        ) {
+            app.selected_atmosphere_source = usize::try_from(selected)
+                .unwrap_or_default()
+                .min(app.atmosphere.sources.len() - 1);
+        }
+    }
+
+    let mut add_source = false;
+    let mut remove_source = false;
+    frame.row_ex(
+        &LayoutOpts {
+            gap: 8.0,
+            cross: Align::Stretch,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            if app.atmosphere.sources.len() < MAX_ATMOSPHERE_SOURCES {
+                frame.flex(1.0);
+                add_source = frame.button(text(language, Key::AddLight));
+            }
+            if !app.atmosphere.sources.is_empty() {
+                frame.flex(1.0);
+                remove_source = frame.button(text(language, Key::RemoveLight));
+            }
+        },
+    );
+    if add_source {
+        app.add_atmosphere_source();
+    } else if remove_source {
+        app.remove_selected_atmosphere_source();
+    }
+    if app.atmosphere.sources.is_empty() {
+        frame.label_wrapped_sized(
+            text(language, Key::AtmosphereHint),
+            8.5,
+            (width - 52.0).max(120.0),
+        );
+        return;
+    }
+
+    let index = app
+        .selected_atmosphere_source
+        .min(app.atmosphere.sources.len() - 1);
+    let changed = {
+        let source = &mut app.atmosphere.sources[index];
+        let mut changed = false;
+
+        inspector_group(frame, text(language, Key::Placement));
+        let mut shape = match source.shape {
+            AtmosphereSourceShape::Circle => 0,
+            AtmosphereSourceShape::Oval => 1,
+            AtmosphereSourceShape::Beam => 2,
+        };
+        if frame.dropdown(
+            text(language, Key::SourceShape),
+            &mut shape,
+            &[
+                text(language, Key::Circle),
+                text(language, Key::Oval),
+                text(language, Key::Beam),
+            ],
+        ) {
+            source.shape = match shape {
+                1 => AtmosphereSourceShape::Oval,
+                2 => AtmosphereSourceShape::Beam,
+                _ => AtmosphereSourceShape::Circle,
+            };
+            changed = true;
+        }
+        changed |= inspector_slider(
+            frame,
+            text(language, Key::Horizontal),
+            "##source-x",
+            &mut source.x,
+            -2.0,
+            3.0,
+        );
+        changed |= inspector_slider(
+            frame,
+            text(language, Key::Vertical),
+            "##source-y",
+            &mut source.y,
+            -2.0,
+            3.0,
+        );
+        changed |= inspector_slider(
+            frame,
+            text(language, Key::Radius),
+            "##source-radius",
+            &mut source.radius,
+            0.05,
+            2.0,
+        );
+        if source.shape != AtmosphereSourceShape::Circle {
+            changed |= inspector_slider(
+                frame,
+                text(language, Key::AspectRatio),
+                "##source-aspect",
+                &mut source.aspect,
+                1.0,
+                4.0,
+            );
+            changed |= inspector_slider(
+                frame,
+                text(language, Key::Rotation),
+                "##source-rotation",
+                &mut source.rotation,
+                -0.5,
+                0.5,
+            );
+        }
+
+        inspector_group(frame, text(language, Key::Appearance));
+        let mut palette = match source.palette {
+            AtmospherePalette::Preset => 0,
+            AtmospherePalette::Custom => 1,
+        };
+        if frame.dropdown(
+            text(language, Key::Palette),
+            &mut palette,
+            &[
+                text(language, Key::FollowPreset),
+                text(language, Key::CustomColor),
+            ],
+        ) {
+            source.palette = if palette == 0 {
+                AtmospherePalette::Preset
+            } else {
+                AtmospherePalette::Custom
+            };
+            changed = true;
+        }
+        let mut falloff = match source.falloff {
+            AtmosphereFalloff::Diffuse => 0,
+            AtmosphereFalloff::Focused => 1,
+            AtmosphereFalloff::Halo => 2,
+        };
+        if frame.dropdown(
+            text(language, Key::Falloff),
+            &mut falloff,
+            &[
+                text(language, Key::Diffuse),
+                text(language, Key::Focused),
+                text(language, Key::Halo),
+            ],
+        ) {
+            source.falloff = match falloff {
+                1 => AtmosphereFalloff::Focused,
+                2 => AtmosphereFalloff::Halo,
+                _ => AtmosphereFalloff::Diffuse,
+            };
+            changed = true;
+        }
+        changed |= inspector_slider(
+            frame,
+            text(language, Key::Strength),
+            "##source-strength",
+            &mut source.intensity,
+            0.0,
+            2.0,
+        );
+        if source.palette == AtmospherePalette::Custom {
+            changed |= inspector_slider(
+                frame,
+                text(language, Key::Hue),
+                "##source-hue",
+                &mut source.hue,
+                0.0,
+                1.0,
+            );
+            changed |= inspector_slider(
+                frame,
+                text(language, Key::Saturation),
+                "##source-saturation",
+                &mut source.saturation,
+                0.0,
+                1.0,
+            );
+        }
+
+        inspector_group(frame, text(language, Key::MotionAndAudio));
+        changed |= inspector_slider(
+            frame,
+            text(language, Key::Drift),
+            "##source-drift",
+            &mut source.drift,
+            0.0,
+            0.18,
+        );
+        let mut audio_response = match source.audio_response {
+            AtmosphereAudioResponse::None => 0,
+            AtmosphereAudioResponse::Energy => 1,
+            AtmosphereAudioResponse::Bass => 2,
+            AtmosphereAudioResponse::Mid => 3,
+            AtmosphereAudioResponse::Treble => 4,
+            AtmosphereAudioResponse::Onset => 5,
+        };
+        if frame.dropdown(
+            text(language, Key::AudioResponse),
+            &mut audio_response,
+            &[
+                text(language, Key::NoResponse),
+                text(language, Key::Energy),
+                text(language, Key::Bass),
+                text(language, Key::Midrange),
+                text(language, Key::Treble),
+                text(language, Key::Onset),
+            ],
+        ) {
+            source.audio_response = match audio_response {
+                1 => AtmosphereAudioResponse::Energy,
+                2 => AtmosphereAudioResponse::Bass,
+                3 => AtmosphereAudioResponse::Mid,
+                4 => AtmosphereAudioResponse::Treble,
+                5 => AtmosphereAudioResponse::Onset,
+                _ => AtmosphereAudioResponse::None,
+            };
+            changed = true;
+        }
+        if source.audio_response != AtmosphereAudioResponse::None {
+            changed |= inspector_slider(
+                frame,
+                text(language, Key::ScaleResponse),
+                "##source-audio-scale",
+                &mut source.audio_scale,
+                0.0,
+                0.8,
+            );
+            changed |= inspector_slider(
+                frame,
+                text(language, Key::StrengthResponse),
+                "##source-audio-strength",
+                &mut source.audio_intensity,
+                0.0,
+                1.5,
+            );
+        }
+        changed
+    };
+    if changed {
+        app.apply_atmosphere();
+    }
 }
 
 fn settings(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
@@ -809,6 +1739,28 @@ fn settings(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
         1.0,
     ) {
         app.apply_volume();
+    }
+    frame.spacer(8.0);
+    let mut playback_mode = match app.playback_mode {
+        PlaybackMode::Sequential => 0,
+        PlaybackMode::RepeatOne => 1,
+        PlaybackMode::Shuffle => 2,
+    };
+    let playback_modes = [
+        text(language, Key::Sequential),
+        text(language, Key::RepeatOne),
+        text(language, Key::Shuffle),
+    ];
+    if frame.dropdown(
+        text(language, Key::PlaybackMode),
+        &mut playback_mode,
+        &playback_modes,
+    ) {
+        app.set_playback_mode(match playback_mode {
+            1 => PlaybackMode::RepeatOne,
+            2 => PlaybackMode::Shuffle,
+            _ => PlaybackMode::Sequential,
+        });
     }
     frame.spacer(8.0);
     let mut selected = match app.language_preference() {
@@ -835,6 +1787,30 @@ fn settings(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
             "{}: {}",
             text(language, Key::ConfigFile),
             app.config_path().display()
+        ),
+        (width - 60.0).max(260.0),
+    );
+    frame.label_wrapped(
+        &format!(
+            "{}: {}",
+            text(language, Key::StateFile),
+            app.state_path().display()
+        ),
+        (width - 60.0).max(260.0),
+    );
+    frame.label_wrapped(
+        &format!(
+            "{}: {}",
+            text(language, Key::FavoritesFile),
+            app.user_data_path().display()
+        ),
+        (width - 60.0).max(260.0),
+    );
+    frame.label_wrapped(
+        &format!(
+            "{}: {}",
+            text(language, Key::CatalogFile),
+            app.catalog_path().display()
         ),
         (width - 60.0).max(260.0),
     );
@@ -871,23 +1847,32 @@ fn queue(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: La
             ..LayoutOpts::default()
         },
         |frame| {
-            frame.row(|frame| {
-                frame.heading(text(language, Key::UpNext), 2);
-                frame.flex(1.0);
-                frame.label_sized(text(language, Key::Queue), 9.0);
-            });
+            frame.row_ex(
+                &LayoutOpts {
+                    cross: Align::Center,
+                    ..LayoutOpts::default()
+                },
+                |frame| {
+                    frame.heading(text(language, Key::UpNext), 2);
+                    frame.flex(1.0);
+                    frame.label_sized(text(language, Key::Queue), 9.0);
+                },
+            );
             frame.separator();
             frame.size_next(0.0, (height - 70.0).max(150.0));
             frame.scroll("queue-scroll", |frame| {
                 if app.tracks.is_empty() {
                     frame.label_sized(text(language, Key::EmptyQueue), 11.0);
                 }
-                for index in app.queue_indices() {
+                for (queue_position, index) in app.queue_items() {
                     let track = &app.tracks[index];
                     let label = ellipsize(&format!("{}  ·  {}", track.title, track.artist), 34);
                     frame.size_next(0.0, 48.0);
-                    if frame.selectable(&label, app.current_index == Some(index)) {
-                        app.play_index(index);
+                    if frame.selectable(
+                        &label,
+                        app.playback_queue_position() == Some(queue_position),
+                    ) {
+                        app.play_queue_position(queue_position);
                     }
                 }
             });
@@ -895,147 +1880,382 @@ fn queue(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: La
     );
 }
 
-fn player_bar(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
+fn player_bar(
+    app: &mut App,
+    frame: &mut Frame,
+    width: f32,
+    language: Language,
+    artwork: Option<*mut c_void>,
+) {
     frame.size_next(0.0, PLAYER_HEIGHT);
-    frame.row_ex(
+    frame.column_ex(
         &LayoutOpts {
             height: PLAYER_HEIGHT,
-            gap: 12.0,
-            pad: 14.0,
-            cross: Align::Center,
-            bg: Color::rgba(7, 9, 13, 232),
+            gap: 6.0,
+            pad: 10.0,
+            cross: Align::Stretch,
+            bg: Color::rgba(7, 9, 13, 238),
             radius: 24.0,
             ..LayoutOpts::default()
         },
         |frame| {
-            if width >= 720.0 {
-                let current = app.current_track().map(|track| {
-                    (
-                        ellipsize(&track.title, 30),
-                        ellipsize(&track.artist, 24),
-                        track.codec.clone(),
-                        track.favorite,
-                    )
-                });
-                frame.size_next(if width >= 1_100.0 { 256.0 } else { 210.0 }, 66.0);
-                frame.column_ex(
-                    &LayoutOpts {
-                        width: if width >= 1_100.0 { 256.0 } else { 210.0 },
-                        height: 66.0,
-                        gap: 3.0,
-                        pad: 8.0,
-                        bg: Color::rgba(255, 255, 255, 9),
-                        radius: 15.0,
-                        ..LayoutOpts::default()
-                    },
-                    |frame| {
-                        if let Some((title, artist, codec, favorite)) = current.as_ref() {
-                            frame.row_ex(
-                                &LayoutOpts {
-                                    gap: 4.0,
-                                    cross: Align::Center,
-                                    ..LayoutOpts::default()
-                                },
-                                |frame| {
-                                    frame.flex(1.0);
-                                    frame.label_compact_sized(title, 13.5);
-                                    frame.size_next(28.0, 24.0);
-                                    if frame.icon_button_active(Icon::Star, *favorite) {
-                                        app.toggle_current_favorite();
-                                    }
-                                },
-                            );
-                            frame.label_compact_sized(&format!("{artist}  ·  {codec}"), 10.0);
-                        } else {
-                            frame.label_compact_sized(text(language, Key::NothingPlaying), 13.0);
-                            frame.label_compact_sized(text(language, Key::AddLocalTrack), 10.0);
-                        }
-                    },
-                );
-            }
+            frame.row_ex(
+                &LayoutOpts {
+                    height: 60.0,
+                    gap: 12.0,
+                    cross: Align::Center,
+                    ..LayoutOpts::default()
+                },
+                |frame| {
+                    let track_width = if width >= 1_280.0 {
+                        300.0
+                    } else if width >= 900.0 {
+                        260.0
+                    } else if width >= 720.0 {
+                        220.0
+                    } else {
+                        180.0
+                    };
+                    frame.size_next(track_width, 60.0);
+                    now_playing_panel(
+                        app,
+                        frame,
+                        track_width,
+                        60.0,
+                        artwork,
+                        language,
+                        width >= 720.0,
+                    );
+                    frame.flex(1.0);
+                    transport_controls(app, frame);
+                    let auxiliary_width = if width >= 1_280.0 {
+                        260.0
+                    } else if width >= 760.0 {
+                        228.0
+                    } else {
+                        196.0
+                    };
+                    auxiliary_controls(app, frame, auxiliary_width);
+                },
+            );
+            playback_timeline(app, frame, (width - ROOT_PAD * 2.0 - 20.0).max(1.0));
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn now_playing_panel(
+    app: &mut App,
+    frame: &mut Frame,
+    width: f32,
+    height: f32,
+    artwork: Option<*mut c_void>,
+    language: Language,
+    show_favorite: bool,
+) {
+    let current = app.current_track().map(|track| {
+        (
+            ellipsize(&track.title, if width >= 280.0 { 30 } else { 22 }),
+            ellipsize(&track.artist, if width >= 280.0 { 24 } else { 18 }),
+            track.codec.clone(),
+            track.favorite,
+        )
+    });
+    frame.row_ex(
+        &LayoutOpts {
+            width,
+            height,
+            flex: if width == 0.0 { 1.0 } else { 0.0 },
+            gap: 9.0,
+            pad: 6.0,
+            cross: Align::Center,
+            bg: Color::rgba(255, 255, 255, 9),
+            radius: 15.0,
+        },
+        |frame| {
+            album_art(app, frame, artwork, height - 12.0);
             frame.flex(1.0);
-            playback_controls(app, frame);
-            if width >= 960.0 {
-                frame.size_next(168.0, 62.0);
-                frame.column_ex(
-                    &LayoutOpts {
-                        width: 168.0,
-                        height: 62.0,
-                        gap: 3.0,
-                        pad: 8.0,
-                        bg: Color::rgba(255, 255, 255, 7),
-                        radius: 15.0,
-                        ..LayoutOpts::default()
-                    },
-                    |frame| {
-                        frame.label_compact_sized(text(language, Key::Volume), 9.0);
-                        if frame.slider("##volume", &mut app.volume, 0.0, 1.0) {
-                            app.apply_volume();
-                        }
-                    },
-                );
+            frame.column_ex(
+                &LayoutOpts {
+                    flex: 1.0,
+                    gap: 3.0,
+                    ..LayoutOpts::default()
+                },
+                |frame| {
+                    if let Some((title, artist, codec, _)) = current.as_ref() {
+                        frame.label_compact_sized(title, 13.0);
+                        frame.label_compact_sized(&format!("{artist}  ·  {codec}"), 9.5);
+                    } else {
+                        frame.label_compact_sized(text(language, Key::NothingPlaying), 12.5);
+                        frame.label_compact_sized(text(language, Key::AddLocalTrack), 9.5);
+                    }
+                },
+            );
+            if show_favorite && let Some((_, _, _, favorite)) = current {
+                frame.size_next(44.0, 40.0);
+                if frame.icon_button_badged(Icon::Star, "", 26.0, favorite) {
+                    app.toggle_current_favorite();
+                }
             }
         },
     );
 }
 
-fn playback_controls(app: &mut App, frame: &mut Frame) {
+#[allow(unsafe_code)]
+fn album_art(app: &App, frame: &mut Frame, artwork: Option<*mut c_void>, size: f32) {
+    frame.size_next(size, size);
+    if let Some(artwork) = artwork {
+        // SAFETY: ArtworkCache owns this texture for at least the complete
+        // build/paint/render cycle and only replaces it between frames.
+        unsafe { frame.image(artwork.cast(), size, size) };
+        return;
+    }
+    let accent = PRESETS[app.preset % PRESETS.len()].accent;
     frame.column_ex(
         &LayoutOpts {
-            flex: 1.0,
-            gap: 4.0,
-            cross: Align::Stretch,
+            width: size,
+            height: size,
+            cross: Align::Center,
+            bg: Color::rgba(accent[0], accent[1], accent[2], 34),
+            radius: 9.0,
             ..LayoutOpts::default()
         },
         |frame| {
-            frame.row_ex(
-                &LayoutOpts {
-                    height: 38.0,
-                    gap: 7.0,
-                    cross: Align::Center,
-                    ..LayoutOpts::default()
-                },
-                |frame| {
-                    frame.flex(1.0);
-                    frame.spacer(0.0);
-                    frame.size_next(36.0, 32.0);
-                    if frame.selectable("◀", false) {
-                        app.previous();
-                    }
-                    frame.size_next(48.0, 38.0);
-                    if frame.button(if app.playback_state.is_playing() {
-                        "Ⅱ"
-                    } else {
-                        "▶"
-                    }) {
-                        app.toggle_playback();
-                    }
-                    frame.size_next(36.0, 32.0);
-                    if frame.selectable("▶|", false) {
-                        app.next();
-                    }
-                    frame.flex(1.0);
-                    frame.spacer(0.0);
-                },
-            );
-            frame.row_ex(
-                &LayoutOpts {
-                    height: 24.0,
-                    gap: 7.0,
-                    cross: Align::Center,
-                    ..LayoutOpts::default()
-                },
-                |frame| {
-                    frame.label_compact_sized(&format_duration(app.position_ms), 9.5);
-                    frame.flex(1.0);
-                    if frame.slider("##timeline", &mut app.seek_ratio, 0.0, 1.0) {
-                        app.commit_seek();
-                    }
-                    frame.label_compact_sized(&format_duration(app.duration_ms), 9.5);
-                },
-            );
+            frame.flex(1.0);
+            frame.spacer(0.0);
+            frame.icon(Icon::Radio, (size * 0.38).max(16.0));
+            frame.flex(1.0);
+            frame.spacer(0.0);
         },
     );
+}
+
+fn auxiliary_controls(app: &mut App, frame: &mut Frame, width: f32) {
+    frame.size_next(width, 52.0);
+    frame.row_ex(
+        &LayoutOpts {
+            width,
+            height: 52.0,
+            gap: 6.0,
+            pad: 6.0,
+            cross: Align::Center,
+            bg: Color::rgba(255, 255, 255, 7),
+            radius: 14.0,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            frame.size_next(44.0, 40.0);
+            if player_icon_button(
+                frame,
+                playback_mode_icon(app.playback_mode),
+                app.playback_mode != PlaybackMode::Sequential,
+            ) {
+                app.cycle_playback_mode();
+            }
+            if lyrics_button(app, frame) {
+                app.view = if app.view == View::Lyrics {
+                    View::Home
+                } else {
+                    View::Lyrics
+                };
+            }
+            frame.size_next(26.0, 26.0);
+            player_icon(frame, volume_icon(app.volume), 24.0);
+            frame.flex(1.0);
+            if frame.slider("##volume", &mut app.volume, 0.0, 1.0) {
+                app.apply_volume();
+            }
+        },
+    );
+}
+
+fn lyrics_button(app: &App, frame: &mut Frame) -> bool {
+    let base = theme(app.preset);
+    let accent = PRESETS[app.preset % PRESETS.len()].accent;
+    let active = app.view == View::Lyrics;
+    let tile = base
+        .with_font_size(18.0)
+        .with_accent(if active {
+            Color::rgba(accent[0], accent[1], accent[2], 46)
+        } else {
+            Color::rgba(255, 255, 255, 8)
+        })
+        .with_active(Color::rgba(255, 255, 255, 22))
+        .with_corner_radius(12.0);
+    frame.set_theme(tile);
+    frame.size_next(44.0, 40.0);
+    let clicked = frame.button("L##lyrics-control");
+    frame.set_theme(base);
+    clicked
+}
+
+fn transport_controls(app: &mut App, frame: &mut Frame) {
+    frame.row_ex(
+        &LayoutOpts {
+            flex: 1.0,
+            height: 52.0,
+            gap: 8.0,
+            cross: Align::Center,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            frame.flex(1.0);
+            frame.spacer(0.0);
+            frame.size_next(46.0, 42.0);
+            if player_icon_button(frame, PlayerIcon::Previous, false) {
+                app.previous();
+            }
+            frame.size_next(54.0, 46.0);
+            if player_icon_button(
+                frame,
+                if app.playback_state.is_playing() {
+                    PlayerIcon::Pause
+                } else {
+                    PlayerIcon::Play
+                },
+                true,
+            ) {
+                app.toggle_playback();
+            }
+            frame.size_next(46.0, 42.0);
+            if player_icon_button(frame, PlayerIcon::Next, false) {
+                app.next();
+            }
+            frame.flex(1.0);
+            frame.spacer(0.0);
+        },
+    );
+}
+
+fn playback_timeline(app: &mut App, frame: &mut Frame, width: f32) {
+    frame.row_ex(
+        &LayoutOpts {
+            width,
+            height: 26.0,
+            gap: 8.0,
+            cross: Align::Center,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            frame.size_next(42.0, 22.0);
+            frame.label_compact_sized(&format_duration(app.position_ms), 9.5);
+            frame.flex(1.0);
+            if frame.slider("##timeline", &mut app.seek_ratio, 0.0, 1.0) {
+                app.commit_seek();
+            }
+            frame.size_next(42.0, 22.0);
+            frame.label_compact_sized(&format_duration(app.duration_ms), 9.5);
+        },
+    );
+}
+
+fn playback_mode_toast(app: &App, frame: &mut Frame, width: f32, height: f32, language: Language) {
+    let Some(toast) = app.playback_mode_toast() else {
+        return;
+    };
+    let toast_width = 164.0;
+    let opacity = toast.opacity.clamp(0.0, 1.0);
+    let alpha = metric_alpha(opacity * 255.0);
+    let accent = PRESETS[app.preset % PRESETS.len()].accent;
+    let base = theme(app.preset);
+    frame.set_theme(base.with_fg(base.fg().with_alpha(alpha)));
+    frame.layer(
+        "playback-mode-toast",
+        Rect {
+            x: ((width - toast_width) * 0.5).max(8.0),
+            y: (height - ROOT_PAD - PLAYER_HEIGHT - 48.0 + toast.offset_y).max(8.0),
+            w: toast_width,
+            h: 38.0,
+        },
+        &OverlayOpts {
+            pad: 10.0,
+            cross: Align::Center,
+            bg: Color::rgba(10, 13, 18, metric_alpha(opacity * 236.0)),
+            border: Color::rgba(
+                accent[0],
+                accent[1],
+                accent[2],
+                metric_alpha(opacity * 92.0),
+            ),
+            border_width: 1.0,
+            radius: 14.0,
+            min_width: toast_width,
+            ..OverlayOpts::default()
+        },
+        |frame| {
+            frame.label_compact_sized(playback_mode_label(language, toast.mode), 12.0);
+        },
+    );
+    frame.set_theme(base);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PlayerIcon {
+    Sequential,
+    RepeatOne,
+    Shuffle,
+    Previous,
+    Play,
+    Pause,
+    Next,
+    VolumeMuted,
+    VolumeLow,
+    VolumeHigh,
+}
+
+impl PlayerIcon {
+    fn icon(self) -> Icon {
+        match self {
+            Self::Sequential | Self::RepeatOne => Icon::Repeat,
+            Self::Shuffle => Icon::Shuffle,
+            Self::Previous => Icon::SkipBack,
+            Self::Play => Icon::Play,
+            Self::Pause => Icon::Pause,
+            Self::Next => Icon::SkipForward,
+            Self::VolumeMuted => Icon::VolumeMuted,
+            Self::VolumeLow => Icon::VolumeLow,
+            Self::VolumeHigh => Icon::VolumeHigh,
+        }
+    }
+}
+
+fn playback_mode_icon(mode: PlaybackMode) -> PlayerIcon {
+    match mode {
+        PlaybackMode::Sequential => PlayerIcon::Sequential,
+        PlaybackMode::RepeatOne => PlayerIcon::RepeatOne,
+        PlaybackMode::Shuffle => PlayerIcon::Shuffle,
+    }
+}
+
+fn playback_mode_label(language: Language, mode: PlaybackMode) -> &'static str {
+    match mode {
+        PlaybackMode::Sequential => text(language, Key::Sequential),
+        PlaybackMode::RepeatOne => text(language, Key::RepeatOne),
+        PlaybackMode::Shuffle => text(language, Key::Shuffle),
+    }
+}
+
+fn volume_icon(volume: f32) -> PlayerIcon {
+    if volume <= 0.001 {
+        PlayerIcon::VolumeMuted
+    } else if volume < 0.5 {
+        PlayerIcon::VolumeLow
+    } else {
+        PlayerIcon::VolumeHigh
+    }
+}
+
+fn player_icon_button(frame: &mut Frame, icon: PlayerIcon, active: bool) -> bool {
+    let badge = if matches!(icon, PlayerIcon::RepeatOne) {
+        "1"
+    } else {
+        ""
+    };
+    frame.icon_button_badged(icon.icon(), badge, 26.0, active)
+}
+
+fn player_icon(frame: &mut Frame, icon: PlayerIcon, size: f32) {
+    frame.icon(icon.icon(), size);
 }
 
 fn ellipsize(value: &str, max_chars: usize) -> String {
@@ -1057,5 +2277,46 @@ mod tests {
     fn ellipsis_is_unicode_safe() {
         assert_eq!(ellipsize("春日长标题", 4), "春日长…");
         assert_eq!(ellipsize("short", 8), "short");
+    }
+
+    #[test]
+    fn visual_theme_uses_each_preset_palette() {
+        for (index, preset) in PRESETS.iter().enumerate() {
+            let themed = theme(index);
+            assert_eq!(
+                themed.accent(),
+                Color::rgba(preset.accent[0], preset.accent[1], preset.accent[2], 255)
+            );
+            assert_eq!(
+                themed.active(),
+                Color::rgba(preset.accent[0], preset.accent[1], preset.accent[2], 38)
+            );
+        }
+    }
+
+    #[test]
+    fn content_scrims_preserve_glow_by_information_density() {
+        assert_eq!(content_surface_alpha(View::Visuals), 92);
+        assert_eq!(content_surface_alpha(View::Home), 128);
+        assert_eq!(content_surface_alpha(View::Library), 148);
+        assert!(content_surface_alpha(View::Home) < content_surface_alpha(View::Library));
+    }
+
+    #[test]
+    fn visual_inspector_never_squeezes_the_side_stage_below_its_minimum() {
+        let threshold = VISUAL_MIN_SIDE_STAGE_WIDTH + VISUAL_INSPECTOR_WIDTH + VISUAL_STAGE_GAP;
+
+        assert!(!uses_side_visual_layout(threshold - 0.5));
+        assert!(uses_side_visual_layout(threshold));
+        assert!(
+            (side_visual_stage_width(threshold) - VISUAL_MIN_SIDE_STAGE_WIDTH).abs() < f32::EPSILON
+        );
+        assert!((stacked_visual_stage_height(560.0) - 212.8).abs() < 0.01);
+        assert!((stacked_visual_stage_height(1_000.0) - 260.0).abs() < f32::EPSILON);
+        assert!(uses_compact_visual_stage(stacked_visual_stage_height(
+            560.0
+        )));
+        assert!(uses_compact_visual_stage(VISUAL_COMPACT_STAGE_HEIGHT - 0.5));
+        assert!(!uses_compact_visual_stage(VISUAL_COMPACT_STAGE_HEIGHT));
     }
 }

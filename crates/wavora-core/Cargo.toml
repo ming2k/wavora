@@ -9,6 +9,7 @@ description = "Domain types for the Wavora local music player"
 
 [dependencies]
 serde.workspace = true
+uuid.workspace = true
 
 [lints.rust]
 unsafe_code = "deny"

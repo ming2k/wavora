@@ -1,0 +1,95 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ming2k/wavora/main/docs/reference/wavora-lyrics.schema.json",
+  "format": "wavora-lyrics",
+  "version": "1.0",
+  "required_features": ["multi-track", "text-variants", "timed-segments"],
+  "offset_ms": 0,
+  "media": {
+    "duration_ms": 213400
+  },
+  "metadata": {
+    "title": "Signal",
+    "artist": "Example Artist",
+    "contributors": [
+      { "name": "Example Transcriber", "role": "transcriber" },
+      { "name": "Example Translator", "role": "translator" }
+    ],
+    "source": {
+      "name": "Original example for Wavora",
+      "uri": "https://example.invalid/wavora-lyrics"
+    },
+    "rights": {
+      "license": "CC0-1.0",
+      "license_uri": "https://creativecommons.org/publicdomain/zero/1.0/"
+    }
+  },
+  "tracks": [
+    {
+      "id": "lead",
+      "role": "main",
+      "label": "Lead",
+      "language": "en",
+      "direction": "ltr"
+    },
+    {
+      "id": "backing",
+      "role": "background",
+      "label": "Backing vocal",
+      "language": "zh-Hans",
+      "direction": "ltr"
+    }
+  ],
+  "cues": [
+    {
+      "id": "cue-001",
+      "track_id": "lead",
+      "start_ms": 12400,
+      "end_ms": 15800,
+      "texts": [
+        {
+          "kind": "original",
+          "text": "Follow the signal home",
+          "segments": [
+            { "start_ms": 12400, "end_ms": 12950, "text": "Follow " },
+            { "start_ms": 13000, "end_ms": 13400, "text": "the " },
+            { "start_ms": 13450, "end_ms": 14400, "text": "signal " },
+            { "start_ms": 14500, "end_ms": 15800, "text": "home" }
+          ]
+        },
+        {
+          "kind": "translation",
+          "language": "zh-Hans",
+          "text": "循着信号回家"
+        },
+        {
+          "kind": "transliteration",
+          "language": "en-Latn",
+          "text": "Follow the signal home"
+        }
+      ]
+    },
+    {
+      "id": "cue-002",
+      "track_id": "backing",
+      "start_ms": 14000,
+      "end_ms": 15500,
+      "texts": [
+        {
+          "kind": "original",
+          "text": "循着信号"
+        }
+      ]
+    },
+    {
+      "id": "cue-003",
+      "track_id": "lead",
+      "start_ms": 16100,
+      "texts": [
+        {
+          "kind": "original",
+          "text": "I can hear it now"
+        }
+      ]
+    }
+  ]
+}

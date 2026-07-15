@@ -27,6 +27,14 @@ Current product direction:
 - Atomic configuration writes and startup restoration of the most recent
   track, favorites, volume, and visual preset; corrupt configuration is backed
   up and recovered automatically
+- Durable local playlists backed by immutable track IDs; exact matching
+  preserves moves and metadata edits, while guarded acoustic matching can
+  reconnect one unambiguous re-encoded missing track
+- Queue-aware sequential, repeat-one, and shuffle playback; shuffle visits
+  every queue entry before beginning another cycle
+- Synchronized multi-track lyrics with translations, transliterations, timed
+  text segments, and optional media binding through validated `.wlyric.json`
+  sidecars
 
 Built-in decoding supports FLAC, MP3, M4A/AAC, Ogg Vorbis, and WAV. During
 scanning, Wavora opens each file and reads its actual duration. Files that
@@ -53,11 +61,12 @@ You can also pass music files or directories:
 cargo run --release -- ~/Music
 cargo run --release -- ~/Music/example.flac
 cargo run --release -- --visuals --preset=0
+cargo run --release -- --lyrics
 ```
 
-Use `--visuals` or `--library` to open the visual stage or music library at
-startup. Use `--preset=0..5` to preview a visual preset without overwriting the
-saved selection.
+Use `--visuals`, `--library`, `--playlists`, or `--lyrics` to open a specific
+view at startup. Use `--preset=0..5` to preview a visual preset without
+overwriting the saved selection.
 
 A local installation defaults to `~/.local` and includes the desktop entry,
 icon, AppStream metadata, and Optics runtime libraries:
@@ -87,8 +96,14 @@ plugins are not required.
 
 The workspace is divided by responsibility into `wavora-core` (domain model),
 `wavora-audio-analysis` (pure PCM feature extraction), `wavora-i18n` (language
-resolution and localized copy), `wavora-media` (scanning, decoding, and
-output), `wavora-visuals` (presets, response envelopes, transitions, and Flux
-drawing), and the root application (state, persistence, and Optics UI). See
-[Architecture](docs/ARCHITECTURE.md) and [Design Direction](docs/DESIGN.md) for
-the architectural and design constraints.
+resolution and localized copy), `wavora-library` (durable identity and
+playlists), `wavora-media` (scanning, decoding, and output), `wavora-visuals`
+(presets, response envelopes, transitions, and Flux drawing), and the root
+application (state, persistence, and Optics UI). See
+[System Architecture](docs/explanation/system-architecture.md),
+[Track Identity](docs/explanation/track-identity.md), and
+[Visual Design](docs/explanation/visual-design.md) for the architectural and
+design constraints. The [Lyrics Format](docs/reference/lyrics-format.md)
+defines the synchronized lyrics sidecar and validation rules. The
+[documentation index](docs/index.md) links the full explanation and reference
+set.
