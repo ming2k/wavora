@@ -1,10 +1,15 @@
 use crate::app::{App, View, VisualInspectorTab};
+use crate::config::PlaylistDisplay;
 use iris::{
     Align, Color, Frame, Icon, LayoutOpts, OverlayOpts, Rect, TableColumn, TableOpts, Theme,
 };
 use std::ffi::c_void;
-use wavora_core::{PlaybackMode, format_duration};
+use wavora_core::{PlaybackMode, PlaylistId, TrackId, format_duration};
 use wavora_i18n::{Key, Language, LanguagePreference, text, visual_preset_text};
+use wavora_ui::{
+    InsightCard, InspectorTabs, PlayerControlButton, inspector_group, inspector_note,
+    inspector_section, inspector_slider, player_control_button, theme as product_theme,
+};
 use wavora_visuals::{
     AtmosphereAudioResponse, AtmosphereFalloff, AtmosphereFieldKind, AtmospherePalette,
     AtmosphereSourceShape, MAX_ATMOSPHERE_SOURCES, PRESETS,
@@ -16,34 +21,26 @@ const TOP_BAR_HEIGHT: f32 = 54.0;
 const COMPACT_NAV_HEIGHT: f32 = 46.0;
 const STATUS_HEIGHT: f32 = 40.0;
 const PLAYER_HEIGHT: f32 = 112.0;
+const TIMELINE_TRACK_THICKNESS: f32 = 3.0;
+const TIMELINE_KNOB_SIZE: f32 = 10.0;
+const TIMELINE_TIME_WIDTH: f32 = 42.0;
+const TIMELINE_GAP: f32 = 8.0;
+const SIDEBAR_MIN_WIDTH: f32 = 128.0;
+const SIDEBAR_MAX_WIDTH: f32 = 190.0;
+const SIDEBAR_PAD: f32 = 14.0;
+const NAV_ICON_GAP: f32 = 8.0;
 const VISUAL_INSPECTOR_WIDTH: f32 = 304.0;
 const VISUAL_MIN_SIDE_STAGE_WIDTH: f32 = 480.0;
 const VISUAL_STAGE_GAP: f32 = 14.0;
 const VISUAL_COMPACT_STAGE_HEIGHT: f32 = 340.0;
+const QUEUE_PANEL_WIDTH: f32 = 300.0;
+const QUEUE_ITEM_HEIGHT: f32 = 76.0;
+const QUEUE_ARTWORK_SIZE: f32 = 60.0;
 
 #[must_use]
 pub fn theme(preset: usize) -> Theme {
     let accent = PRESETS[preset % PRESETS.len()].accent;
-    Theme::dark()
-        .with_bg(Color::rgba(3, 5, 8, 255))
-        .with_fg(Color::rgba(232, 236, 239, 255))
-        .with_accent(Color::rgba(accent[0], accent[1], accent[2], 255))
-        .with_border(Color::rgba(255, 255, 255, 22))
-        .with_hover(Color::rgba(255, 255, 255, 16))
-        .with_active(Color::rgba(accent[0], accent[1], accent[2], 38))
-        .with_disabled(Color::rgba(138, 144, 153, 150))
-        .with_error(Color::rgba(255, 96, 116, 255))
-        .with_font_size(14.0)
-        .with_corner_radius(12.0)
-        .with_border_width(1.0)
-        .with_active_indicator_width(0.0)
-        .with_scrollbar_width(8.0)
-        .with_scrollbar_radius(4.0)
-        .with_scrollbar_min_thumb_h(38.0)
-        .with_scrollbar_track_color(Color::rgba(255, 255, 255, 10))
-        .with_scrollbar_thumb_color(Color::rgba(255, 255, 255, 54))
-        .with_scrollbar_thumb_hover_color(Color::rgba(255, 255, 255, 92))
-        .with_scrollbar_thumb_active_color(Color::rgba(accent[0], accent[1], accent[2], 190))
+    product_theme(accent)
 }
 
 pub fn build(
@@ -52,21 +49,29 @@ pub fn build(
     width: f32,
     height: f32,
     artwork: Option<*mut c_void>,
+    playlist_artwork: &[(PlaylistId, *mut c_void)],
+    queue_artwork: &[(TrackId, *mut c_void)],
 ) {
     frame.set_theme(theme(app.preset));
     let show_sidebar = width >= 760.0;
-    let show_queue = width >= 1_300.0;
-    let status_visible = app.toast_message().is_some();
+    let queue_progress = app.queue_panel_progress();
+    let show_queue = queue_progress > f32::EPSILON;
+    let status_visible = app.playback_error_message().is_some();
     let language = app.language();
-    let sidebar_width = if show_sidebar { 190.0 } else { 0.0 };
-    let queue_width = if show_queue { 272.0 } else { 0.0 };
+    let sidebar_width = if show_sidebar {
+        sidebar_intrinsic_width(app, frame, language)
+    } else {
+        0.0
+    };
+    let queue_width = QUEUE_PANEL_WIDTH * queue_progress;
+    let queue_gap = GAP * queue_progress;
     let panel_width = (width
         - ROOT_PAD * 2.0
         - sidebar_width
         - queue_width
         - if show_sidebar { GAP } else { 0.0 }
-        - if show_queue { GAP } else { 0.0 })
-    .max(320.0);
+        - queue_gap)
+        .max(320.0);
     let root_gap_count =
         2.0 + if show_sidebar { 0.0 } else { 1.0 } + if status_visible { 1.0 } else { 0.0 };
     let chrome_height = TOP_BAR_HEIGHT
@@ -143,23 +148,39 @@ pub fn build(
             frame.row_ex(
                 &LayoutOpts {
                     flex: 1.0,
-                    gap: GAP,
+                    gap: 0.0,
                     cross: Align::Stretch,
                     ..LayoutOpts::default()
                 },
                 |frame| {
                     if show_sidebar {
                         sidebar(app, frame, language);
+                        frame.spacer(GAP);
                     }
-                    frame.flex(1.0);
-                    main_content(app, frame, panel_width, content_height, language);
+                    main_content(
+                        app,
+                        frame,
+                        panel_width,
+                        content_height,
+                        language,
+                        playlist_artwork,
+                    );
                     if show_queue {
-                        queue(app, frame, queue_width, content_height, language);
+                        frame.spacer(queue_gap);
+                        queue(
+                            app,
+                            frame,
+                            queue_width,
+                            content_height,
+                            language,
+                            queue_artwork,
+                        );
                     }
                 },
             );
             player_bar(app, frame, width, language, artwork);
             playback_mode_toast(app, frame, width, height, language);
+            transient_toast(app, frame, width, show_sidebar, status_visible);
         },
     );
 }
@@ -249,7 +270,7 @@ fn compact_nav_item(app: &mut App, frame: &mut Frame, icon: Icon, label: &str, v
 }
 
 fn status_banner(app: &App, frame: &mut Frame, width: f32) {
-    let Some(message) = app.toast_message() else {
+    let Some(message) = app.playback_error_message() else {
         return;
     };
     let max_chars = if width >= 1_200.0 {
@@ -264,19 +285,13 @@ fn status_banner(app: &App, frame: &mut Frame, width: f32) {
         24
     };
     let message = ellipsize(message, max_chars);
-    let background = if app.status_is_error() {
-        Color::rgba(255, 96, 116, 22)
-    } else {
-        let accent = PRESETS[app.preset % PRESETS.len()].accent;
-        Color::rgba(accent[0], accent[1], accent[2], 20)
-    };
     frame.size_next(0.0, STATUS_HEIGHT);
     frame.row_ex(
         &LayoutOpts {
             height: STATUS_HEIGHT,
             pad: 10.0,
             cross: Align::Center,
-            bg: background,
+            bg: Color::rgba(255, 96, 116, 22),
             radius: 12.0,
             ..LayoutOpts::default()
         },
@@ -284,14 +299,109 @@ fn status_banner(app: &App, frame: &mut Frame, width: f32) {
     );
 }
 
+fn transient_toast(
+    app: &App,
+    frame: &mut Frame,
+    width: f32,
+    show_sidebar: bool,
+    status_visible: bool,
+) {
+    let Some(toast) = app.transient_toast() else {
+        return;
+    };
+    let max_chars = if width >= 1_000.0 {
+        72
+    } else if width >= 700.0 {
+        52
+    } else if width >= 500.0 {
+        38
+    } else {
+        24
+    };
+    let message = ellipsize(toast.message, max_chars);
+    let max_width = (width - ROOT_PAD * 2.0).clamp(1.0, 480.0);
+    let measured_width = frame.measure_text(&message, 11.5).width + 52.0;
+    let toast_width = measured_width.max(160.0).min(max_width);
+    let opacity = toast.opacity.clamp(0.0, 1.0);
+    let alpha = metric_alpha(opacity * 255.0);
+    let accent = PRESETS[app.preset % PRESETS.len()].accent;
+    let tone = if toast.is_error {
+        [255, 96, 116]
+    } else {
+        accent
+    };
+    let base = theme(app.preset);
+    let toast_theme = base.with_fg(base.fg().with_alpha(alpha));
+    let y = ROOT_PAD
+        + TOP_BAR_HEIGHT
+        + GAP
+        + if show_sidebar {
+            0.0
+        } else {
+            COMPACT_NAV_HEIGHT + GAP
+        }
+        + if status_visible {
+            STATUS_HEIGHT + GAP
+        } else {
+            0.0
+        };
+    frame.set_theme(toast_theme);
+    frame.layer(
+        "transient-status-toast",
+        Rect {
+            x: ((width - toast_width) * 0.5).max(8.0),
+            y: (y + toast.offset_y).max(8.0),
+            w: toast_width,
+            h: STATUS_HEIGHT,
+        },
+        &OverlayOpts {
+            gap: 8.0,
+            pad: 10.0,
+            cross: Align::Center,
+            bg: Color::rgba(10, 13, 18, metric_alpha(opacity * 244.0)),
+            border: Color::rgba(tone[0], tone[1], tone[2], metric_alpha(opacity * 104.0)),
+            border_width: 1.0,
+            radius: 14.0,
+            min_width: toast_width,
+        },
+        |frame| {
+            frame.size_next(toast_width - 20.0, 20.0);
+            frame.row_ex(
+                &LayoutOpts {
+                    width: toast_width - 20.0,
+                    height: 20.0,
+                    gap: 8.0,
+                    cross: Align::Center,
+                    ..LayoutOpts::default()
+                },
+                |frame| {
+                    frame.set_theme(
+                        toast_theme.with_fg(Color::rgba(tone[0], tone[1], tone[2], alpha)),
+                    );
+                    frame.icon(
+                        if toast.is_error {
+                            Icon::X
+                        } else {
+                            Icon::CheckCircle
+                        },
+                        16.0,
+                    );
+                    frame.set_theme(toast_theme);
+                    frame.label_compact_sized(&message, 11.5);
+                },
+            );
+        },
+    );
+    frame.set_theme(base);
+}
+
 fn sidebar(app: &mut App, frame: &mut Frame, language: Language) {
-    frame.size_next(190.0, 0.0);
     frame.column_ex(
         &LayoutOpts {
-            width: 190.0,
-            flex: 1.0,
+            min_width: SIDEBAR_MIN_WIDTH,
+            max_width: SIDEBAR_MAX_WIDTH,
             gap: 7.0,
-            pad: 14.0,
+            pad: SIDEBAR_PAD,
             cross: Align::Stretch,
             bg: Color::rgba(9, 12, 17, 208),
             radius: 22.0,
@@ -344,16 +454,45 @@ fn sidebar(app: &mut App, frame: &mut Frame, language: Language) {
             ));
             frame.flex(1.0);
             frame.spacer(0.0);
-            frame.label_sized(
-                if app.scanning {
-                    text(language, Key::Scanning)
-                } else {
-                    "Rodio · Symphonia · Optics"
-                },
-                10.0,
-            );
+            if app.scanning {
+                frame.label_sized(text(language, Key::Scanning), 10.0);
+            }
         },
     );
+}
+
+fn sidebar_intrinsic_width(app: &App, frame: &Frame, language: Language) -> f32 {
+    let theme = frame.theme();
+    let control_padding = theme.padding() * 2.0;
+    let label_width =
+        |label: &str, size: f32| frame.measure_text(label, size).width + control_padding;
+    let nav_width = |label: &str| {
+        theme.font_size()
+            + NAV_ICON_GAP
+            + frame.measure_text(label, theme.font_size()).width
+            + control_padding
+    };
+
+    let local_tracks = format!("{} {}", app.tracks.len(), text(language, Key::LocalTracks));
+    let favorites = format!(
+        "{} {}",
+        app.favorite_count(),
+        text(language, Key::FavoriteTracks)
+    );
+    let mut widest_child = label_width(text(language, Key::YourSpace), 9.5)
+        .max(nav_width(text(language, Key::Now)))
+        .max(nav_width(text(language, Key::Library)))
+        .max(nav_width(text(language, Key::Favorites)))
+        .max(nav_width(text(language, Key::Playlists)))
+        .max(nav_width(text(language, Key::VisualStage)))
+        .max(label_width(text(language, Key::Collection), 9.5))
+        .max(label_width(&local_tracks, theme.font_size()))
+        .max(label_width(&favorites, theme.font_size()));
+    if app.scanning {
+        widest_child = widest_child.max(label_width(text(language, Key::Scanning), 10.0));
+    }
+
+    (widest_child + SIDEBAR_PAD * 2.0).clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
 }
 
 fn nav_item(app: &mut App, frame: &mut Frame, icon: Icon, label: &str, view: View) {
@@ -363,7 +502,14 @@ fn nav_item(app: &mut App, frame: &mut Frame, icon: Icon, label: &str, view: Vie
     }
 }
 
-fn main_content(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: Language) {
+fn main_content(
+    app: &mut App,
+    frame: &mut Frame,
+    width: f32,
+    height: f32,
+    language: Language,
+    playlist_artwork: &[(PlaylistId, *mut c_void)],
+) {
     let background = Color::rgba(7, 10, 15, content_surface_alpha(app.view));
     frame.column_ex(
         &LayoutOpts {
@@ -379,7 +525,7 @@ fn main_content(app: &mut App, frame: &mut Frame, width: f32, height: f32, langu
             View::Home => home(app, frame, width, language),
             View::Library => library(app, frame, false, width, height, language),
             View::Favorites => library(app, frame, true, width, height, language),
-            View::Playlists => playlists(app, frame, width, height, language),
+            View::Playlists => playlists(app, frame, width, height, language, playlist_artwork),
             View::Lyrics => lyrics(app, frame, width, height, language),
             View::Visuals => visuals(app, frame, width, height, language),
             View::Settings => settings(app, frame, width, language),
@@ -434,46 +580,26 @@ fn home(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
             ..LayoutOpts::default()
         },
         |frame| {
-            insight_card(
-                frame,
+            InsightCard::new(
                 text(language, Key::LibraryCard),
                 &format!("{} {}", app.tracks.len(), text(language, Key::Tracks)),
                 text(language, Key::LocalArchive),
-            );
+            )
+            .show(frame);
             if width >= 720.0 {
-                insight_card(
-                    frame,
+                InsightCard::new(
                     text(language, Key::VisualCard),
                     visual_preset_text(language, app.preset).name,
                     visual_preset_text(language, app.preset).subtitle,
-                );
-                insight_card(
-                    frame,
+                )
+                .show(frame);
+                InsightCard::new(
                     text(language, Key::EngineCard),
                     "SYMPHONIA",
                     text(language, Key::SystemDecode),
-                );
+                )
+                .show(frame);
             }
-        },
-    );
-}
-
-fn insight_card(frame: &mut Frame, eyebrow: &str, title: &str, subtitle: &str) {
-    frame.flex(1.0);
-    frame.column_ex(
-        &LayoutOpts {
-            flex: 1.0,
-            height: 104.0,
-            gap: 5.0,
-            pad: 14.0,
-            bg: Color::rgba(255, 255, 255, 10),
-            radius: 16.0,
-            ..LayoutOpts::default()
-        },
-        |frame| {
-            frame.label_sized(eyebrow, 9.0);
-            frame.label_sized(title, 16.0);
-            frame.label_sized(subtitle, 10.5);
         },
     );
 }
@@ -614,26 +740,74 @@ fn library(
     }
 }
 
-fn playlists(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: Language) {
+fn playlists(
+    app: &mut App,
+    frame: &mut Frame,
+    width: f32,
+    height: f32,
+    language: Language,
+    playlist_artwork: &[(PlaylistId, *mut c_void)],
+) {
+    if app.playlist_detail_open() && app.selected_playlist().is_some() {
+        playlist_detail(app, frame, width, height, language);
+    } else {
+        playlist_collection(app, frame, width, height, language, playlist_artwork);
+    }
+}
+
+fn playlist_collection(
+    app: &mut App,
+    frame: &mut Frame,
+    width: f32,
+    height: f32,
+    language: Language,
+    playlist_artwork: &[(PlaylistId, *mut c_void)],
+) {
+    let display = app.playlist_display();
+    let mut requested_display = None;
     frame.row_ex(
         &LayoutOpts {
             height: 38.0,
+            gap: 7.0,
             cross: Align::Center,
             ..LayoutOpts::default()
         },
         |frame| {
             frame.heading(text(language, Key::Playlists), 1);
             frame.flex(1.0);
-            frame.label_sized(
-                &format!(
-                    "{} {}",
-                    app.selected_playlist_tracks().len(),
-                    text(language, Key::Tracks)
-                ),
-                10.0,
-            );
+            frame.spacer(0.0);
+            if width >= 620.0 {
+                frame.size_next(96.0, 34.0);
+                if frame.selectable_icon(
+                    Icon::Menu,
+                    text(language, Key::ListView),
+                    display == PlaylistDisplay::List,
+                ) {
+                    requested_display = Some(PlaylistDisplay::List);
+                }
+                frame.size_next(96.0, 34.0);
+                if frame.selectable_icon(
+                    Icon::Grid,
+                    text(language, Key::CoverView),
+                    display == PlaylistDisplay::Covers,
+                ) {
+                    requested_display = Some(PlaylistDisplay::Covers);
+                }
+            } else {
+                frame.size_next(38.0, 34.0);
+                if frame.icon_button_active(Icon::Menu, display == PlaylistDisplay::List) {
+                    requested_display = Some(PlaylistDisplay::List);
+                }
+                frame.size_next(38.0, 34.0);
+                if frame.icon_button_active(Icon::Grid, display == PlaylistDisplay::Covers) {
+                    requested_display = Some(PlaylistDisplay::Covers);
+                }
+            }
         },
     );
+    if let Some(requested_display) = requested_display {
+        app.set_playlist_display(requested_display);
+    }
 
     frame.row_ex(
         &LayoutOpts {
@@ -659,21 +833,88 @@ fn playlists(app: &mut App, frame: &mut Frame, width: f32, height: f32, language
         return;
     }
 
-    let labels = available_playlists
-        .iter()
-        .map(|playlist| playlist.name.as_str())
-        .collect::<Vec<_>>();
-    let mut selected = available_playlists
-        .iter()
-        .position(|playlist| Some(playlist.id) == app.selected_playlist_id())
-        .and_then(|index| i32::try_from(index).ok())
-        .unwrap_or_default();
-    if frame.dropdown(text(language, Key::Playlists), &mut selected, &labels)
-        && let Some(playlist) = usize::try_from(selected)
-            .ok()
-            .and_then(|index| available_playlists.get(index))
-    {
-        app.select_playlist(playlist.id);
+    let collection_height = (height - 118.0).max(160.0);
+    match app.playlist_display() {
+        PlaylistDisplay::List => {
+            playlist_list_collection(app, frame, width, collection_height, &available_playlists);
+        }
+        PlaylistDisplay::Covers => {
+            playlist_cover_collection(app, frame, width, collection_height, playlist_artwork);
+        }
+    }
+}
+
+fn playlist_list_collection(
+    app: &mut App,
+    frame: &mut Frame,
+    width: f32,
+    height: f32,
+    playlists: &[wavora_core::Playlist],
+) {
+    let mut open_action = None;
+    frame.size_next((width - 44.0).max(280.0), height);
+    frame.scroll("playlist-list-collection", |frame| {
+        frame.column_ex(
+            &LayoutOpts {
+                gap: 5.0,
+                cross: Align::Stretch,
+                ..LayoutOpts::default()
+            },
+            |frame| {
+                for playlist in playlists {
+                    frame.push_id(&playlist.id.to_string());
+                    frame.size_next(0.0, 46.0);
+                    if frame.selectable_icon(Icon::BookOpen, &ellipsize(&playlist.name, 56), false)
+                    {
+                        open_action = Some(playlist.id);
+                    }
+                    frame.pop_id();
+                }
+            },
+        );
+    });
+    if let Some(playlist_id) = open_action {
+        app.open_playlist(playlist_id);
+    }
+}
+
+fn playlist_detail(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: Language) {
+    let Some(playlist_name) = app
+        .selected_playlist()
+        .map(|playlist| playlist.name.clone())
+    else {
+        app.close_playlist_detail();
+        return;
+    };
+    let track_count = app.selected_playlist_tracks().len();
+    let mut go_back = false;
+    frame.row_ex(
+        &LayoutOpts {
+            height: 36.0,
+            gap: 10.0,
+            cross: Align::Center,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            if frame.link(text(language, Key::Playlists)) {
+                go_back = true;
+            }
+            frame.label_compact_sized("/", 14.0);
+            frame.label_compact_sized(
+                &ellipsize(&playlist_name, if width >= 700.0 { 42 } else { 24 }),
+                14.0,
+            );
+            frame.flex(1.0);
+            frame.spacer(0.0);
+            frame.label_sized(
+                &format!("{} {}", track_count, text(language, Key::Tracks)),
+                10.0,
+            );
+        },
+    );
+    if go_back {
+        app.close_playlist_detail();
+        return;
     }
 
     frame.row_ex(
@@ -685,6 +926,7 @@ fn playlists(app: &mut App, frame: &mut Frame, width: f32, height: f32, language
         },
         |frame| {
             frame.flex(1.0);
+            frame.spacer(0.0);
             if frame.selectable(text(language, Key::AddCurrentTrack), false) {
                 app.add_current_to_selected_playlist();
             }
@@ -724,7 +966,7 @@ fn playlists(app: &mut App, frame: &mut Frame, width: f32, height: f32, language
         },
     ];
     let table_width = (width - 44.0).max(280.0);
-    let table_height = (height - 214.0).max(140.0);
+    let table_height = (height - 106.0).max(140.0);
     let tracks = app.selected_playlist_tracks();
     frame.size_next(table_width, table_height);
     let result = frame.table(
@@ -758,6 +1000,123 @@ fn playlists(app: &mut App, frame: &mut Frame, width: f32, height: f32, language
         && let Some(row) = result.selected
     {
         app.click_playlist_table_row(row);
+    }
+}
+
+#[allow(
+    unsafe_code,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn playlist_cover_collection(
+    app: &mut App,
+    frame: &mut Frame,
+    width: f32,
+    viewport_height: f32,
+    playlist_artwork: &[(PlaylistId, *mut c_void)],
+) {
+    const CARD_GAP: f32 = 10.0;
+    const MIN_CARD_WIDTH: f32 = 148.0;
+    const MAX_CARD_WIDTH: f32 = 176.0;
+
+    let available_width = (width - 44.0).max(MIN_CARD_WIDTH);
+    let mut columns = 1_usize;
+    for candidate in 2_usize..=4 {
+        let minimum = MIN_CARD_WIDTH * candidate as f32 + CARD_GAP * (candidate - 1) as f32;
+        if available_width >= minimum {
+            columns = candidate;
+        }
+    }
+    let gaps = CARD_GAP * columns.saturating_sub(1) as f32;
+    let card_width = ((available_width - gaps) / columns as f32).min(MAX_CARD_WIDTH);
+    let cover_size = (card_width - 20.0).clamp(96.0, 156.0);
+    let card_height = cover_size + 48.0;
+    let cards = app.playlists().to_vec();
+    let mut open_action = None;
+
+    frame.size_next(available_width, viewport_height);
+    frame.scroll("playlist-cover-gallery", |frame| {
+        frame.column_ex(
+            &LayoutOpts {
+                gap: CARD_GAP,
+                cross: Align::Stretch,
+                ..LayoutOpts::default()
+            },
+            |frame| {
+                for row in cards.chunks(columns) {
+                    frame.row_ex(
+                        &LayoutOpts {
+                            height: card_height,
+                            gap: CARD_GAP,
+                            cross: Align::Start,
+                            ..LayoutOpts::default()
+                        },
+                        |frame| {
+                            for playlist in row {
+                                frame.push_id(&playlist.id.to_string());
+                                frame.size_next(card_width, card_height);
+                                frame.column_ex(
+                                    &LayoutOpts {
+                                        width: card_width,
+                                        height: card_height,
+                                        gap: 5.0,
+                                        pad: 10.0,
+                                        cross: Align::Stretch,
+                                        bg: Color::rgba(255, 255, 255, 9),
+                                        radius: 17.0,
+                                        ..LayoutOpts::default()
+                                    },
+                                    |frame| {
+                                        frame.size_next(cover_size, cover_size);
+                                        let cover_clicked = if let Some((_, texture)) =
+                                            playlist_artwork.iter().find(|(playlist_id, _)| {
+                                                *playlist_id == playlist.id
+                                            }) {
+                                            // SAFETY: ArtworkGallery owns the texture through the
+                                            // complete Lens render for this frame.
+                                            unsafe { frame.image_button(texture.cast()) }
+                                        } else {
+                                            frame.icon_button_badged(
+                                                Icon::Radio,
+                                                "",
+                                                cover_size * 0.30,
+                                                false,
+                                            )
+                                        };
+                                        if cover_clicked {
+                                            open_action = Some(playlist.id);
+                                        }
+                                        frame.size_next(0.0, 26.0);
+                                        frame.row_ex(
+                                            &LayoutOpts {
+                                                height: 26.0,
+                                                cross: Align::Center,
+                                                ..LayoutOpts::default()
+                                            },
+                                            |frame| {
+                                                frame.flex(1.0);
+                                                frame.spacer(0.0);
+                                                frame.label_compact_sized(
+                                                    &ellipsize(&playlist.name, 22),
+                                                    12.0,
+                                                );
+                                                frame.flex(1.0);
+                                                frame.spacer(0.0);
+                                            },
+                                        );
+                                    },
+                                );
+                                frame.pop_id();
+                            }
+                        },
+                    );
+                }
+            },
+        );
+    });
+    if let Some(playlist_id) = open_action {
+        app.open_playlist(playlist_id);
     }
 }
 
@@ -942,6 +1301,7 @@ fn visual_stage(app: &App, frame: &mut Frame, width: f32, height: f32, language:
             cross: Align::Stretch,
             bg: Color::rgba(3, 6, 11, 52),
             radius: 20.0,
+            ..LayoutOpts::default()
         },
         |frame| {
             let accent = PRESETS[app.preset % PRESETS.len()].accent;
@@ -1184,17 +1544,18 @@ fn visual_controls(app: &mut App, frame: &mut Frame, width: f32, language: Langu
                 },
                 9.0,
             );
-            let mut active_tab = match app.visual_inspector_tab {
+            let active_tab = match app.visual_inspector_tab {
                 VisualInspectorTab::Composition => 0,
                 VisualInspectorTab::Atmosphere => 1,
             };
-            frame.size_next((width - 28.0).max(1.0), 0.0);
-            frame.tabs("visual-inspector-tabs", &mut active_tab, |frame| {
-                frame.flex(1.0);
-                let _ = frame.tab(text(language, Key::Composition));
-                frame.flex(1.0);
-                let _ = frame.tab(text(language, Key::Atmosphere));
-            });
+            let tab_rail_width = (width - 28.0).max(1.0);
+            let labels = [
+                text(language, Key::Composition),
+                text(language, Key::Atmosphere),
+            ];
+            let active_tab =
+                InspectorTabs::new("visual-inspector-tabs", &labels, active_tab, tab_rail_width)
+                    .show(frame);
             app.visual_inspector_tab = if active_tab == 1 {
                 VisualInspectorTab::Atmosphere
             } else {
@@ -1214,68 +1575,6 @@ fn visual_controls(app: &mut App, frame: &mut Frame, width: f32, language: Langu
                 }
             }
         },
-    );
-}
-
-fn inspector_section<R>(frame: &mut Frame, title: &str, body: impl FnOnce(&mut Frame) -> R) -> R {
-    frame.column_ex(
-        &LayoutOpts {
-            gap: 8.0,
-            pad: 12.0,
-            cross: Align::Stretch,
-            bg: Color::rgba(255, 255, 255, 8),
-            radius: 14.0,
-            ..LayoutOpts::default()
-        },
-        |frame| {
-            frame.label_sized(title, 8.5);
-            frame.separator();
-            body(frame)
-        },
-    )
-}
-
-fn inspector_group(frame: &mut Frame, title: &str) {
-    frame.spacer(4.0);
-    frame.label_sized(title, 8.0);
-}
-
-fn inspector_slider(
-    frame: &mut Frame,
-    label: &str,
-    id: &str,
-    value: &mut f32,
-    min: f32,
-    max: f32,
-) -> bool {
-    let readout = format!("{value:.2}");
-    frame.row_ex(
-        &LayoutOpts {
-            height: 18.0,
-            gap: 6.0,
-            cross: Align::Center,
-            ..LayoutOpts::default()
-        },
-        |frame| {
-            frame.label_compact_sized(label, 8.5);
-            frame.flex(1.0);
-            frame.spacer(0.0);
-            frame.label_compact_sized(&readout, 8.0);
-        },
-    );
-    frame.slider(id, value, min, max)
-}
-
-fn inspector_note(frame: &mut Frame, copy: &str, width: f32) {
-    frame.column_ex(
-        &LayoutOpts {
-            pad: 10.0,
-            cross: Align::Stretch,
-            bg: Color::rgba(255, 255, 255, 5),
-            radius: 12.0,
-            ..LayoutOpts::default()
-        },
-        |frame| frame.label_wrapped_sized(copy, 8.5, (width - 48.0).max(120.0)),
     );
 }
 
@@ -1833,12 +2132,17 @@ fn settings(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
     );
 }
 
-fn queue(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: Language) {
-    frame.size_next(width, 0.0);
+fn queue(
+    app: &mut App,
+    frame: &mut Frame,
+    width: f32,
+    height: f32,
+    language: Language,
+    artwork: &[(TrackId, *mut c_void)],
+) {
     frame.column_ex(
         &LayoutOpts {
             width,
-            flex: 1.0,
             gap: 8.0,
             pad: 16.0,
             cross: Align::Stretch,
@@ -1866,11 +2170,21 @@ fn queue(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: La
                 }
                 for (queue_position, index) in app.queue_items() {
                     let track = &app.tracks[index];
-                    let label = ellipsize(&format!("{}  ·  {}", track.title, track.artist), 34);
-                    frame.size_next(0.0, 48.0);
-                    if frame.selectable(
-                        &label,
-                        app.playback_queue_position() == Some(queue_position),
+                    let track_id = track.id;
+                    let title = track.title.clone();
+                    let metadata = format!("{}  ·  {}", track.artist, track.album);
+                    let texture = artwork.iter().find_map(|(candidate, texture)| {
+                        (*candidate == track_id).then_some(*texture)
+                    });
+                    let active = app.playback_queue_position() == Some(queue_position);
+                    if queue_item(
+                        app,
+                        frame,
+                        queue_position,
+                        &title,
+                        &metadata,
+                        texture,
+                        active,
                     ) {
                         app.play_queue_position(queue_position);
                     }
@@ -1878,6 +2192,73 @@ fn queue(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: La
             });
         },
     );
+}
+
+fn queue_item(
+    app: &App,
+    frame: &mut Frame,
+    queue_position: usize,
+    title: &str,
+    metadata: &str,
+    artwork: Option<*mut c_void>,
+    active: bool,
+) -> bool {
+    let accent = PRESETS[app.preset % PRESETS.len()].accent;
+    let base = theme(app.preset);
+    let mut clicked = false;
+    frame.push_id(&format!("queue-item-{queue_position}"));
+    frame.size_next(0.0, QUEUE_ITEM_HEIGHT);
+    frame.row_ex(
+        &LayoutOpts {
+            height: QUEUE_ITEM_HEIGHT,
+            gap: 10.0,
+            pad: 8.0,
+            cross: Align::Center,
+            bg: if active {
+                Color::rgba(accent[0], accent[1], accent[2], 18)
+            } else {
+                Color::TRANSPARENT
+            },
+            radius: 12.0,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            album_art(app, frame, artwork, QUEUE_ARTWORK_SIZE);
+            frame.column_ex(
+                &LayoutOpts {
+                    flex: 1.0,
+                    gap: 5.0,
+                    ..LayoutOpts::default()
+                },
+                |frame| {
+                    frame.set_theme(base.with_fg(if active {
+                        Color::rgba(accent[0], accent[1], accent[2], 255)
+                    } else {
+                        base.fg()
+                    }));
+                    clicked |= frame.link(&ellipsize(title, 25));
+                    frame.set_theme(
+                        base.with_fg(Color::rgba(174, 177, 184, 255))
+                            .with_font_size(11.0),
+                    );
+                    frame.row_ex(
+                        &LayoutOpts {
+                            gap: 5.0,
+                            cross: Align::Center,
+                            ..LayoutOpts::default()
+                        },
+                        |frame| {
+                            frame.icon(Icon::Play, 14.0);
+                            clicked |= frame.link(&ellipsize(metadata, 29));
+                        },
+                    );
+                    frame.set_theme(base);
+                },
+            );
+        },
+    );
+    frame.pop_id();
+    clicked
 }
 
 fn player_bar(
@@ -1888,57 +2269,47 @@ fn player_bar(
     artwork: Option<*mut c_void>,
 ) {
     frame.size_next(0.0, PLAYER_HEIGHT);
-    frame.column_ex(
+    frame.row_ex(
         &LayoutOpts {
             height: PLAYER_HEIGHT,
-            gap: 6.0,
+            gap: 12.0,
             pad: 10.0,
-            cross: Align::Stretch,
+            cross: Align::Center,
             bg: Color::rgba(7, 9, 13, 238),
             radius: 24.0,
             ..LayoutOpts::default()
         },
         |frame| {
-            frame.row_ex(
-                &LayoutOpts {
-                    height: 60.0,
-                    gap: 12.0,
-                    cross: Align::Center,
-                    ..LayoutOpts::default()
-                },
-                |frame| {
-                    let track_width = if width >= 1_280.0 {
-                        300.0
-                    } else if width >= 900.0 {
-                        260.0
-                    } else if width >= 720.0 {
-                        220.0
-                    } else {
-                        180.0
-                    };
-                    frame.size_next(track_width, 60.0);
-                    now_playing_panel(
-                        app,
-                        frame,
-                        track_width,
-                        60.0,
-                        artwork,
-                        language,
-                        width >= 720.0,
-                    );
-                    frame.flex(1.0);
-                    transport_controls(app, frame);
-                    let auxiliary_width = if width >= 1_280.0 {
-                        260.0
-                    } else if width >= 760.0 {
-                        228.0
-                    } else {
-                        196.0
-                    };
-                    auxiliary_controls(app, frame, auxiliary_width);
-                },
+            let track_width = if width >= 1_280.0 {
+                300.0
+            } else if width >= 900.0 {
+                260.0
+            } else if width >= 720.0 {
+                220.0
+            } else {
+                180.0
+            };
+            frame.size_next(track_width, 60.0);
+            now_playing_panel(
+                app,
+                frame,
+                track_width,
+                60.0,
+                artwork,
+                language,
+                width >= 720.0,
             );
-            playback_timeline(app, frame, (width - ROOT_PAD * 2.0 - 20.0).max(1.0));
+            let auxiliary_width = if width >= 1_280.0 {
+                180.0
+            } else if width >= 760.0 {
+                174.0
+            } else {
+                160.0
+            };
+            let controls_width =
+                (width - ROOT_PAD * 2.0 - 20.0 - track_width - auxiliary_width - 24.0).max(220.0);
+            playback_controls(app, frame, controls_width);
+            auxiliary_controls(app, frame, auxiliary_width, language);
         },
     );
 }
@@ -1971,6 +2342,7 @@ fn now_playing_panel(
             cross: Align::Center,
             bg: Color::rgba(255, 255, 255, 9),
             radius: 15.0,
+            ..LayoutOpts::default()
         },
         |frame| {
             album_art(app, frame, artwork, height - 12.0);
@@ -2030,28 +2402,20 @@ fn album_art(app: &App, frame: &mut Frame, artwork: Option<*mut c_void>, size: f
     );
 }
 
-fn auxiliary_controls(app: &mut App, frame: &mut Frame, width: f32) {
+fn auxiliary_controls(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
     frame.size_next(width, 52.0);
     frame.row_ex(
         &LayoutOpts {
             width,
             height: 52.0,
-            gap: 6.0,
-            pad: 6.0,
+            gap: 4.0,
+            pad: 4.0,
             cross: Align::Center,
             bg: Color::rgba(255, 255, 255, 7),
             radius: 14.0,
             ..LayoutOpts::default()
         },
         |frame| {
-            frame.size_next(44.0, 40.0);
-            if player_icon_button(
-                frame,
-                playback_mode_icon(app.playback_mode),
-                app.playback_mode != PlaybackMode::Sequential,
-            ) {
-                app.cycle_playback_mode();
-            }
             if lyrics_button(app, frame) {
                 app.view = if app.view == View::Lyrics {
                     View::Home
@@ -2059,14 +2423,93 @@ fn auxiliary_controls(app: &mut App, frame: &mut Frame, width: f32) {
                     View::Lyrics
                 };
             }
-            frame.size_next(26.0, 26.0);
-            player_icon(frame, volume_icon(app.volume), 24.0);
             frame.flex(1.0);
-            if frame.slider("##volume", &mut app.volume, 0.0, 1.0) {
-                app.apply_volume();
+            frame.spacer(0.0);
+            volume_control(app, frame, language);
+            frame.size_next(44.0, 40.0);
+            if player_icon_button(frame, PlayerIcon::Queue, app.queue_panel_open()) {
+                app.toggle_queue_panel();
             }
         },
     );
+}
+
+fn volume_control(app: &mut App, frame: &mut Frame, language: Language) {
+    const OVERLAY_ID: &str = "player-volume-overlay";
+    const OVERLAY_WIDTH: f32 = 58.0;
+    const SLIDER_HEIGHT: f32 = 160.0;
+    const VOLUME_STEP: f32 = 0.05;
+
+    frame.size_next(44.0, 40.0);
+    let clicked = player_icon_button(frame, volume_icon(app.volume), app.volume <= f32::EPSILON);
+    let trigger = frame.response();
+    let scrolled = frame.adjust_float_on_scroll(&mut app.volume, 0.0, 1.0, VOLUME_STEP);
+
+    if clicked {
+        app.toggle_mute();
+    } else if scrolled {
+        app.apply_volume_with_feedback();
+    }
+    if trigger.hovered || scrolled {
+        frame.overlay_open(OVERLAY_ID);
+    }
+
+    let overlay_hovered = frame.overlay_hovered(OVERLAY_ID);
+    let anchor = Rect {
+        x: trigger.rect.x - ((OVERLAY_WIDTH - trigger.rect.w) * 0.5),
+        y: trigger.rect.y,
+        w: OVERLAY_WIDTH,
+        h: trigger.rect.h,
+    };
+    let accent = PRESETS[app.preset % PRESETS.len()].accent;
+    let base = theme(app.preset);
+    let volume_theme = base
+        .with_slider_track_color(Color::rgba(255, 255, 255, 46))
+        .with_slider_fill_color(Color::rgba(accent[0], accent[1], accent[2], 255))
+        .with_slider_knob_color(Color::rgba(252, 252, 253, 255));
+    let mut slider_changed = false;
+    let mut slider_pressed = false;
+    frame.set_theme(volume_theme);
+    frame.overlay(
+        OVERLAY_ID,
+        anchor,
+        &OverlayOpts {
+            gap: 3.0,
+            pad: 8.0,
+            cross: Align::Center,
+            bg: Color::rgba(30, 32, 44, 250),
+            border: Color::rgba(255, 255, 255, 18),
+            border_width: 1.0,
+            radius: 19.0,
+            min_width: OVERLAY_WIDTH,
+        },
+        |frame| {
+            frame.size_next(0.0, 24.0);
+            frame.label_compact_sized(&format!("{:.0}", f64::from(app.volume) * 100.0), 14.0);
+            frame.size_next(32.0, SLIDER_HEIGHT);
+            slider_changed = frame.slider_vertical(
+                text(language, Key::Volume),
+                &mut app.volume,
+                0.0,
+                1.0,
+                VOLUME_STEP,
+            );
+            slider_pressed = frame.response().pressed;
+        },
+    );
+    frame.set_theme(base);
+
+    if slider_changed {
+        app.apply_volume_with_feedback();
+    }
+    if frame.overlay_is_open(OVERLAY_ID)
+        && !trigger.hovered
+        && !trigger.pressed
+        && !overlay_hovered
+        && !slider_pressed
+    {
+        frame.overlay_close(OVERLAY_ID);
+    }
 }
 
 fn lyrics_button(app: &App, frame: &mut Frame) -> bool {
@@ -2081,6 +2524,7 @@ fn lyrics_button(app: &App, frame: &mut Frame) -> bool {
             Color::rgba(255, 255, 255, 8)
         })
         .with_active(Color::rgba(255, 255, 255, 22))
+        .with_border_width(0.0)
         .with_corner_radius(12.0);
     frame.set_theme(tile);
     frame.size_next(44.0, 40.0);
@@ -2089,40 +2533,68 @@ fn lyrics_button(app: &App, frame: &mut Frame) -> bool {
     clicked
 }
 
-fn transport_controls(app: &mut App, frame: &mut Frame) {
-    frame.row_ex(
+fn playback_controls(app: &mut App, frame: &mut Frame, width: f32) {
+    frame.size_next(width, PLAYER_HEIGHT - 20.0);
+    frame.column_ex(
         &LayoutOpts {
-            flex: 1.0,
-            height: 52.0,
-            gap: 8.0,
-            cross: Align::Center,
+            width,
+            height: PLAYER_HEIGHT - 20.0,
+            gap: 2.0,
+            cross: Align::Stretch,
             ..LayoutOpts::default()
         },
         |frame| {
-            frame.flex(1.0);
-            frame.spacer(0.0);
-            frame.size_next(46.0, 42.0);
-            if player_icon_button(frame, PlayerIcon::Previous, false) {
-                app.previous();
-            }
-            frame.size_next(54.0, 46.0);
-            if player_icon_button(
-                frame,
-                if app.playback_state.is_playing() {
-                    PlayerIcon::Pause
-                } else {
-                    PlayerIcon::Play
+            frame.row_ex(
+                &LayoutOpts {
+                    height: 58.0,
+                    gap: 7.0,
+                    cross: Align::Center,
+                    ..LayoutOpts::default()
                 },
-                true,
-            ) {
-                app.toggle_playback();
-            }
-            frame.size_next(46.0, 42.0);
-            if player_icon_button(frame, PlayerIcon::Next, false) {
-                app.next();
-            }
-            frame.flex(1.0);
-            frame.spacer(0.0);
+                |frame| {
+                    frame.flex(1.0);
+                    frame.spacer(0.0);
+                    frame.size_next(42.0, 40.0);
+                    if player_icon_button(
+                        frame,
+                        PlayerIcon::Shuffle,
+                        app.playback_mode == PlaybackMode::Shuffle,
+                    ) {
+                        toggle_playback_mode(app, PlaybackMode::Shuffle);
+                    }
+                    frame.size_next(46.0, 42.0);
+                    if player_icon_button(frame, PlayerIcon::Previous, false) {
+                        app.previous();
+                    }
+                    frame.size_next(54.0, 46.0);
+                    if player_icon_button(
+                        frame,
+                        if app.playback_state.is_playing() {
+                            PlayerIcon::Pause
+                        } else {
+                            PlayerIcon::Play
+                        },
+                        true,
+                    ) {
+                        app.toggle_playback();
+                    }
+                    frame.size_next(46.0, 42.0);
+                    if player_icon_button(frame, PlayerIcon::Next, false) {
+                        app.next();
+                    }
+                    frame.size_next(42.0, 40.0);
+                    if player_icon_button(
+                        frame,
+                        PlayerIcon::RepeatOne,
+                        app.playback_mode == PlaybackMode::RepeatOne,
+                    ) {
+                        toggle_playback_mode(app, PlaybackMode::RepeatOne);
+                    }
+                    frame.flex(1.0);
+                    frame.spacer(0.0);
+                },
+            );
+            playback_timeline(app, frame, width);
         },
     );
 }
@@ -2131,22 +2603,59 @@ fn playback_timeline(app: &mut App, frame: &mut Frame, width: f32) {
     frame.row_ex(
         &LayoutOpts {
             width,
-            height: 26.0,
-            gap: 8.0,
+            height: 24.0,
+            gap: TIMELINE_GAP,
             cross: Align::Center,
             ..LayoutOpts::default()
         },
         |frame| {
-            frame.size_next(42.0, 22.0);
-            frame.label_compact_sized(&format_duration(app.position_ms), 9.5);
-            frame.flex(1.0);
-            if frame.slider("##timeline", &mut app.seek_ratio, 0.0, 1.0) {
+            timeline_time(frame, &format_duration(app.position_ms), true);
+            let timeline_width = (width - TIMELINE_TIME_WIDTH * 2.0 - TIMELINE_GAP * 2.0).max(1.0);
+            frame.size_next(timeline_width, 18.0);
+            let base = theme(app.preset);
+            frame.set_theme(
+                base.with_slider_track_thickness(TIMELINE_TRACK_THICKNESS)
+                    .with_slider_knob_size(TIMELINE_KNOB_SIZE),
+            );
+            let changed = frame.slider("##timeline", &mut app.seek_ratio, 0.0, 1.0);
+            frame.set_theme(base);
+            if changed {
                 app.commit_seek();
             }
-            frame.size_next(42.0, 22.0);
-            frame.label_compact_sized(&format_duration(app.duration_ms), 9.5);
+            timeline_time(frame, &format_duration(app.duration_ms), false);
         },
     );
+}
+
+fn timeline_time(frame: &mut Frame, value: &str, align_end: bool) {
+    frame.size_next(TIMELINE_TIME_WIDTH, 22.0);
+    frame.row_ex(
+        &LayoutOpts {
+            width: TIMELINE_TIME_WIDTH,
+            height: 22.0,
+            cross: Align::Center,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            if align_end {
+                frame.flex(1.0);
+                frame.spacer(0.0);
+            }
+            frame.label_compact_sized(value, 9.5);
+            if !align_end {
+                frame.flex(1.0);
+                frame.spacer(0.0);
+            }
+        },
+    );
+}
+
+fn toggle_playback_mode(app: &mut App, mode: PlaybackMode) {
+    app.set_playback_mode(if app.playback_mode == mode {
+        PlaybackMode::Sequential
+    } else {
+        mode
+    });
 }
 
 fn playback_mode_toast(app: &App, frame: &mut Frame, width: f32, height: f32, language: Language) {
@@ -2191,7 +2700,6 @@ fn playback_mode_toast(app: &App, frame: &mut Frame, width: f32, height: f32, la
 
 #[derive(Debug, Clone, Copy)]
 enum PlayerIcon {
-    Sequential,
     RepeatOne,
     Shuffle,
     Previous,
@@ -2201,12 +2709,13 @@ enum PlayerIcon {
     VolumeMuted,
     VolumeLow,
     VolumeHigh,
+    Queue,
 }
 
 impl PlayerIcon {
     fn icon(self) -> Icon {
         match self {
-            Self::Sequential | Self::RepeatOne => Icon::Repeat,
+            Self::RepeatOne => Icon::Repeat,
             Self::Shuffle => Icon::Shuffle,
             Self::Previous => Icon::SkipBack,
             Self::Play => Icon::Play,
@@ -2215,15 +2724,8 @@ impl PlayerIcon {
             Self::VolumeMuted => Icon::VolumeMuted,
             Self::VolumeLow => Icon::VolumeLow,
             Self::VolumeHigh => Icon::VolumeHigh,
+            Self::Queue => Icon::Menu,
         }
-    }
-}
-
-fn playback_mode_icon(mode: PlaybackMode) -> PlayerIcon {
-    match mode {
-        PlaybackMode::Sequential => PlayerIcon::Sequential,
-        PlaybackMode::RepeatOne => PlayerIcon::RepeatOne,
-        PlaybackMode::Shuffle => PlayerIcon::Shuffle,
     }
 }
 
@@ -2246,16 +2748,13 @@ fn volume_icon(volume: f32) -> PlayerIcon {
 }
 
 fn player_icon_button(frame: &mut Frame, icon: PlayerIcon, active: bool) -> bool {
-    let badge = if matches!(icon, PlayerIcon::RepeatOne) {
-        "1"
+    let button = PlayerControlButton::new(icon.icon()).active(active);
+    let button = if matches!(icon, PlayerIcon::RepeatOne) {
+        button.badge("1")
     } else {
-        ""
+        button
     };
-    frame.icon_button_badged(icon.icon(), badge, 26.0, active)
-}
-
-fn player_icon(frame: &mut Frame, icon: PlayerIcon, size: f32) {
-    frame.icon(icon.icon(), size);
+    player_control_button(frame, button)
 }
 
 fn ellipsize(value: &str, max_chars: usize) -> String {

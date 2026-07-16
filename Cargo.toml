@@ -6,6 +6,7 @@ members = [
     "crates/wavora-i18n",
     "crates/wavora-library",
     "crates/wavora-media",
+    "crates/wavora-ui",
     "crates/wavora-visuals",
 ]
 resolver = "3"
@@ -37,6 +38,7 @@ wavora-core = { path = "crates/wavora-core" }
 wavora-i18n = { path = "crates/wavora-i18n" }
 wavora-library = { path = "crates/wavora-library" }
 wavora-media = { path = "crates/wavora-media" }
+wavora-ui = { path = "crates/wavora-ui" }
 wavora-visuals = { path = "crates/wavora-visuals" }
 
 [package]
@@ -61,6 +63,7 @@ wavora-core.workspace = true
 wavora-i18n.workspace = true
 wavora-library.workspace = true
 wavora-media.workspace = true
+wavora-ui.workspace = true
 wavora-visuals.workspace = true
 
 [profile.release]

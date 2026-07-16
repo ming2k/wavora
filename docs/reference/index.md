@@ -3,6 +3,8 @@
 Reference pages provide exact, lookup-oriented descriptions of Wavora's
 interfaces, stored data, and runtime behavior.
 
+- [Configuration Reference](configuration.md) lists persisted interface
+  preferences and their accepted values.
 - [Lyrics Format](lyrics-format.md) specifies the synchronized local-lyrics
   sidecar format and links its JSON Schema.
 - [Track Identity Reference](track-identity.md) lists track reconciliation,

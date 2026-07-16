@@ -11,7 +11,7 @@ use wavora_core::PlaybackMode;
 use wavora_i18n::LanguagePreference;
 use wavora_visuals::Atmosphere;
 
-const CONFIG_VERSION: u32 = 7;
+const CONFIG_VERSION: u32 = 8;
 const STATE_VERSION: u32 = 1;
 const USER_DATA_VERSION: u32 = 1;
 static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -30,6 +30,7 @@ pub struct AppConfig {
     pub visual_glow: f32,
     pub atmosphere: Atmosphere,
     pub language: LanguagePreference,
+    pub playlist_display: PlaylistDisplay,
     #[serde(rename = "recent_uris", skip_serializing)]
     legacy_recent_uris: Vec<String>,
     #[serde(rename = "favorite_uris", skip_serializing)]
@@ -52,11 +53,21 @@ impl Default for AppConfig {
             visual_glow: 0.9,
             atmosphere: Atmosphere::default(),
             language: LanguagePreference::System,
+            playlist_display: PlaylistDisplay::List,
             legacy_recent_uris: Vec::new(),
             legacy_favorite_uris: Vec::new(),
             legacy_last_track_uri: None,
         }
     }
+}
+
+/// Preferred presentation for the playlist collection selector.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlaylistDisplay {
+    #[default]
+    List,
+    Covers,
 }
 
 impl AppConfig {
@@ -460,6 +471,7 @@ mod tests {
                 volume: 0.41,
                 playback_mode: PlaybackMode::Shuffle,
                 atmosphere: atmosphere.clone(),
+                playlist_display: PlaylistDisplay::Covers,
                 ..AppConfig::default()
             },
             state: AppState::default(),
@@ -477,6 +489,7 @@ mod tests {
         assert!((loaded.config.volume - 0.41).abs() < f32::EPSILON);
         assert_eq!(loaded.config.playback_mode, PlaybackMode::Shuffle);
         assert_eq!(loaded.config.atmosphere, atmosphere);
+        assert_eq!(loaded.config.playlist_display, PlaylistDisplay::Covers);
         assert_eq!(
             loaded.state.last_track_uri.as_deref(),
             Some("file:///music/test.flac")
@@ -528,6 +541,7 @@ mod tests {
         assert!(recovered.is_empty());
         assert_eq!(loaded.config.version, CONFIG_VERSION);
         assert_eq!(loaded.config.atmosphere, Atmosphere::default());
+        assert_eq!(loaded.config.playlist_display, PlaylistDisplay::List);
         assert_eq!(loaded.state.recent_uris, ["file:///music/recent.flac"]);
         assert_eq!(
             loaded.user_data.favorite_uris,

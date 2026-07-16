@@ -93,10 +93,11 @@ and individual cells, while Iris normalizes the platform scroll axis at the
 Wayland boundary.
 
 General-purpose graphics and interface capabilities belong to Optics. Wavora
-retains only player-specific orchestration, presentation state, and product
+combines them through `wavora-ui`, an internal product-level layer containing
+design tokens, theme recipes, and stateless component compositions. The
+application retains page orchestration, presentation state, and product
 behavior. This prevents application requirements from leaking into reusable
-UI primitives and prevents generic framework concerns from entering the
-player's domain model.
+Optics primitives while keeping Wavora's repeated visual rules consistent.
 
 ## Persistence
 

@@ -6,6 +6,8 @@ playlists, playback history, and audio-driven visuals.
 ## Start
 
 - [README](../README.md) provides build, run, and verification commands.
+- [Organize Music with Playlists](how-to/playlists.md) explains playlist list
+  and cover views, local artwork selection, and editing actions.
 
 ## Explanations
 
@@ -18,6 +20,8 @@ playlists, playback history, and audio-driven visuals.
 
 ## Reference
 
+- [Configuration Reference](reference/configuration.md) lists persisted
+  interface preferences and their accepted values.
 - [Lyrics Format](reference/lyrics-format.md) specifies synchronized
   local-lyrics sidecars and validation rules.
 - [Track Identity Reference](reference/track-identity.md) lists the exact

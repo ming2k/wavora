@@ -2,11 +2,15 @@ use flux::{Device, Format, Image};
 use image::imageops::FilterType;
 use image::{ImageReader, Limits};
 use iris::{PaintHost, request_animation_frame};
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
+use std::hash::Hash;
 use std::io::Cursor;
 use wavora_media::load_artwork;
 
 const ARTWORK_TEXTURE_SIZE: u32 = 320;
+const GALLERY_ARTWORK_TEXTURE_SIZE: u32 = 256;
+const GALLERY_LOOKUPS_PER_FRAME: usize = 2;
 const MAX_DECODE_DIMENSION: u32 = 8_192;
 const MAX_DECODE_ALLOCATION: u64 = 96 * 1024 * 1024;
 
@@ -59,7 +63,8 @@ impl ArtworkCache {
         let Some(artwork) = load_artwork(uri) else {
             return;
         };
-        let Some((width, height, pixels)) = decode_artwork(&artwork.bytes) else {
+        let Some((width, height, pixels)) = decode_artwork(&artwork.bytes, ARTWORK_TEXTURE_SIZE)
+        else {
             return;
         };
         // SAFETY: Iris owns this device and guarantees it remains live for the
@@ -79,7 +84,106 @@ impl ArtworkCache {
     }
 }
 
-fn decode_artwork(encoded: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+#[derive(Default)]
+struct GalleryEntry {
+    candidates: Vec<String>,
+    texture: Option<Image>,
+    next_candidate: usize,
+    prepared: bool,
+}
+
+/// Bounded-work texture cache for covers in lists and galleries.
+///
+/// Each entry can supply several ordered candidates, allowing a playlist card
+/// to fall through to a later track when the first track has no artwork.
+pub struct ArtworkGallery<Key> {
+    entries: HashMap<Key, GalleryEntry>,
+    active: bool,
+}
+
+impl<Key> Default for ArtworkGallery<Key> {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            active: false,
+        }
+    }
+}
+
+impl<Key> ArtworkGallery<Key>
+where
+    Key: Copy + Eq + Hash,
+{
+    /// Reconciles the active artwork requests and caches failed lookups.
+    pub fn synchronize<'a>(&mut self, requests: impl IntoIterator<Item = (Key, &'a [String])>) {
+        let requests = requests.into_iter().collect::<Vec<_>>();
+        let desired = requests.iter().map(|(key, _)| *key).collect::<HashSet<_>>();
+        self.entries.retain(|key, _| desired.contains(key));
+        for (key, candidates) in requests {
+            let entry = self.entries.entry(key).or_default();
+            if entry.candidates != candidates {
+                entry.candidates = candidates.to_vec();
+                entry.texture = None;
+                entry.next_candidate = 0;
+                entry.prepared = false;
+            }
+        }
+    }
+
+    pub const fn set_active(&mut self, active: bool) {
+        self.active = active;
+    }
+
+    #[must_use]
+    pub fn texture(&self, key: Key) -> Option<*mut c_void> {
+        self.entries
+            .get(&key)
+            .and_then(|entry| entry.texture.as_ref())
+            .map(|image| image.as_raw().cast())
+    }
+
+    /// Uploads a small batch per paint callback to keep large collections
+    /// from monopolizing one frame.
+    #[allow(unsafe_code)]
+    pub fn prepare(&mut self, host: &PaintHost) {
+        if !self.active {
+            return;
+        }
+        let mut lookups = 0;
+        // SAFETY: Iris owns this device and keeps it live throughout paint.
+        let device = unsafe { Device::borrow_raw(host.device().cast()) };
+        for entry in self.entries.values_mut().filter(|entry| !entry.prepared) {
+            let Some(uri) = entry.candidates.get(entry.next_candidate) else {
+                entry.prepared = true;
+                continue;
+            };
+            entry.next_candidate += 1;
+            lookups += 1;
+            entry.texture = load_artwork(uri).and_then(|artwork| {
+                let (width, height, pixels) =
+                    decode_artwork(&artwork.bytes, GALLERY_ARTWORK_TEXTURE_SIZE)?;
+                Image::from_bytes(
+                    &device,
+                    width,
+                    height,
+                    Format::FLUX_FORMAT_RGBA8_SRGB,
+                    &pixels,
+                )
+                .ok()
+            });
+            entry.prepared =
+                entry.texture.is_some() || entry.next_candidate == entry.candidates.len();
+            if lookups == GALLERY_LOOKUPS_PER_FRAME {
+                break;
+            }
+        }
+        if lookups > 0 {
+            request_animation_frame();
+        }
+    }
+}
+
+fn decode_artwork(encoded: &[u8], size: u32) -> Option<(u32, u32, Vec<u8>)> {
     let mut reader = ImageReader::new(Cursor::new(encoded))
         .with_guessed_format()
         .ok()?;
@@ -89,11 +193,7 @@ fn decode_artwork(encoded: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     limits.max_alloc = Some(MAX_DECODE_ALLOCATION);
     reader.limits(limits);
     let decoded = reader.decode().ok()?;
-    let cover = decoded.resize_to_fill(
-        ARTWORK_TEXTURE_SIZE,
-        ARTWORK_TEXTURE_SIZE,
-        FilterType::Lanczos3,
-    );
+    let cover = decoded.resize_to_fill(size, size, FilterType::Lanczos3);
     let rgba = cover.into_rgba8();
     let (width, height) = rgba.dimensions();
     Some((width, height, rgba.into_raw()))
@@ -111,7 +211,8 @@ mod tests {
         source
             .write_to(&mut encoded, ImageFormat::Png)
             .expect("encode png");
-        let (width, height, pixels) = decode_artwork(encoded.get_ref()).expect("decode artwork");
+        let (width, height, pixels) =
+            decode_artwork(encoded.get_ref(), ARTWORK_TEXTURE_SIZE).expect("decode artwork");
         assert_eq!(
             (width, height),
             (ARTWORK_TEXTURE_SIZE, ARTWORK_TEXTURE_SIZE)

@@ -32,6 +32,7 @@ enum AudioCommand {
     Pause,
     Seek(u64),
     SetVolume(f32),
+    PreviewVolume(f32),
     Shutdown,
 }
 
@@ -105,6 +106,13 @@ impl AudioController {
         let _ = self.commands.send(AudioCommand::SetVolume(volume));
     }
 
+    /// Plays a brief level-confirmation tone at the requested volume.
+    /// Failure to create the optional feedback path never interrupts music
+    /// playback; the primary pipeline remains the source of truth.
+    pub fn preview_volume(&self, volume: f32) {
+        let _ = self.commands.send(AudioCommand::PreviewVolume(volume));
+    }
+
     pub fn try_iter(&self) -> impl Iterator<Item = AudioEvent> + '_ {
         self.events.try_iter()
     }
@@ -133,10 +141,15 @@ fn audio_worker(
     let mut requested_state = PlaybackState::Stopped;
     let mut eos_reported = false;
     let mut tick = 0_u8;
+    let mut volume_feedback: Option<VolumeFeedback> = None;
+    let mut volume_feedback_unavailable = false;
 
     loop {
         match commands.recv_timeout(Duration::from_millis(16)) {
             Ok(AudioCommand::Load(uri)) => {
+                if let Some(feedback) = volume_feedback.as_mut() {
+                    feedback.stop();
+                }
                 let _ = events.send(AudioEvent::State(PlaybackState::Buffering));
                 match Playback::open(&uri, volume) {
                     Ok(new_playback) => {
@@ -186,10 +199,31 @@ fn audio_worker(
                     active.volume.set_property("volume", f64::from(volume));
                 }
             }
+            Ok(AudioCommand::PreviewVolume(value)) => {
+                let value = value.clamp(0.0, 1.0);
+                // Never open a second audio sink beside an existing playback
+                // pipeline. Some fallback backends are exclusive and would
+                // mute or disconnect the music stream.
+                if playback.is_none() {
+                    if volume_feedback.is_none() && !volume_feedback_unavailable {
+                        match VolumeFeedback::new() {
+                            Ok(feedback) => volume_feedback = Some(feedback),
+                            Err(_) => volume_feedback_unavailable = true,
+                        }
+                    }
+                    if let Some(feedback) = volume_feedback.as_mut() {
+                        let _ = feedback.preview(value);
+                    }
+                }
+            }
             Ok(AudioCommand::Shutdown) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                 break;
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+        }
+
+        if let Some(feedback) = volume_feedback.as_mut() {
+            feedback.tick();
         }
 
         if let Some(active) = playback.as_mut() {
@@ -240,6 +274,75 @@ fn audio_worker(
         }
     }
     drop(playback);
+}
+
+struct VolumeFeedback {
+    pipeline: gst::Pipeline,
+    source: gst::Element,
+    volume: gst::Element,
+    stop_at: Option<std::time::Instant>,
+}
+
+impl VolumeFeedback {
+    const DURATION: Duration = Duration::from_millis(95);
+
+    fn new() -> Result<Self, AudioError> {
+        let source = make_element("audiotestsrc", "wavora-volume-feedback-source")?;
+        source.set_property("is-live", true);
+        let convert = make_element("audioconvert", "wavora-volume-feedback-convert")?;
+        let resample = make_element("audioresample", "wavora-volume-feedback-resample")?;
+        let volume = make_element("volume", "wavora-volume-feedback-volume")?;
+        volume.set_property("volume", 0.0_f64);
+        let sink = build_audio_sink()?;
+        let pipeline = gst::Pipeline::with_name("wavora-volume-feedback");
+        pipeline
+            .add_many([&source, &convert, &resample, &volume, &sink])
+            .map_err(|error| AudioError::Pipeline(error.to_string()))?;
+        gst::Element::link_many([&source, &convert, &resample, &volume, &sink])
+            .map_err(|error| AudioError::Pipeline(error.to_string()))?;
+        Ok(Self {
+            pipeline,
+            source,
+            volume,
+            stop_at: None,
+        })
+    }
+
+    fn preview(&mut self, value: f32) -> Result<(), AudioError> {
+        if value <= 0.001 {
+            self.stop();
+            return Ok(());
+        }
+        let value = f64::from(value);
+        self.source.set_property("freq", 420.0 + value * 360.0);
+        self.volume.set_property("volume", 0.025 + value * 0.085);
+        self.pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|error| AudioError::Output(error.to_string()))?;
+        self.stop_at = Some(std::time::Instant::now() + Self::DURATION);
+        Ok(())
+    }
+
+    fn tick(&mut self) {
+        if self
+            .stop_at
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            self.stop();
+        }
+    }
+
+    fn stop(&mut self) {
+        self.volume.set_property("volume", 0.0_f64);
+        let _ = self.pipeline.set_state(gst::State::Null);
+        self.stop_at = None;
+    }
+}
+
+impl Drop for VolumeFeedback {
+    fn drop(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
+    }
 }
 
 type FileDecoder = Decoder<BufReader<File>>;
@@ -565,6 +668,16 @@ mod tests {
     use std::time::Instant;
 
     #[test]
+    fn volume_feedback_tone_starts_updates_and_stops() {
+        gst::init().expect("initialize GStreamer");
+        let mut feedback = VolumeFeedback::new().expect("build feedback pipeline");
+        feedback.preview(0.25).expect("start feedback tone");
+        feedback.preview(0.75).expect("update feedback tone");
+        feedback.preview(0.0).expect("stop feedback tone");
+        assert!(feedback.stop_at.is_none());
+    }
+
+    #[test]
     fn controller_decodes_plays_and_analyses_wav_without_gstreamer_decoder_plugins() {
         let path = std::env::temp_dir().join(format!(
             "wavora-audio-controller-{}.wav",
@@ -576,6 +689,7 @@ mod tests {
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut playing = false;
+        let mut adjusted_volume = false;
         let mut analysed = false;
         let mut reached_eos = false;
         let mut seen = Vec::new();
@@ -583,7 +697,14 @@ mod tests {
             for event in controller.try_iter() {
                 seen.push(format!("{event:?}"));
                 match event {
-                    AudioEvent::State(PlaybackState::Playing) => playing = true,
+                    AudioEvent::State(PlaybackState::Playing) => {
+                        playing = true;
+                        if !adjusted_volume {
+                            controller.set_volume(0.65);
+                            controller.preview_volume(0.65);
+                            adjusted_volume = true;
+                        }
+                    }
                     AudioEvent::Analysis(features) if features.energy > 0.4 => analysed = true,
                     AudioEvent::EndOfStream => reached_eos = true,
                     AudioEvent::Error(error) => panic!("playback failed: {error}"),
@@ -595,6 +716,7 @@ mod tests {
         drop(controller);
         let _ = std::fs::remove_file(path);
         assert!(playing, "controller never played; events: {seen:?}");
+        assert!(adjusted_volume, "controller never adjusted playback volume");
         assert!(
             analysed,
             "controller emitted no PCM analysis; events: {seen:?}"

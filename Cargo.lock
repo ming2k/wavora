@@ -1548,6 +1548,7 @@ dependencies = [
  "wavora-i18n",
  "wavora-library",
  "wavora-media",
+ "wavora-ui",
  "wavora-visuals",
 ]
 
@@ -1598,6 +1599,13 @@ dependencies = [
  "walkdir",
  "wavora-audio-analysis",
  "wavora-core",
+]
+
+[[package]]
+name = "wavora-ui"
+version = "0.2.0"
+dependencies = [
+ "iris",
 ]
 
 [[package]]

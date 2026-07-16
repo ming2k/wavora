@@ -10,6 +10,7 @@ runtime boundaries. For the design model behind these boundaries, use
 wavora
   ├─ wavora-core
   ├─ wavora-i18n
+  ├─ wavora-ui ──> Optics Iris
   ├─ wavora-library ──> wavora-core
   │                  └─ wavora-media
   ├─ wavora-media ──> wavora-core
@@ -26,12 +27,13 @@ domain and analysis crates do not depend on the UI stack.
 
 | Crate | Responsibility |
 |-------|----------------|
-| `wavora` | Application state, configuration persistence, worker coordination, and Optics UI |
+| `wavora` | Application state, page orchestration, configuration persistence, and worker coordination |
 | `wavora-core` | Track identity, playback queue and mode semantics, lyrics schema and timing validation, playback state, and pure formatting logic |
 | `wavora-audio-analysis` | Backend-independent PCM spectrum, pitch, loudness, band, and transient features |
 | `wavora-i18n` | System-locale resolution, language preferences, keys, and localized copy tables |
 | `wavora-library` | SQLite catalog, media identity, favorites, history, missing-file records, and playlists |
 | `wavora-media` | File URIs, asynchronous scanning, decoding, bounded lyrics sidecar loading, analysis scheduling, and native output |
+| `wavora-ui` | Wavora design tokens, theme recipes, and composable product-level Iris components; it contains no application or media state |
 | `wavora-visuals` | Compositions, response envelopes, preset transitions, and Flux drawing |
 
 ## Runtime Boundaries
@@ -72,11 +74,19 @@ The exact identity and matching rules are listed in the
 | Table API, row virtualization, cell and body clipping | Optics Lens |
 | Nested-clip replay and Flux drawing primitives | Optics |
 | Wayland physical-to-logical scroll-axis conversion | Optics Iris |
+| Wavora theme tokens and reusable component recipes | `wavora-ui` |
 | Player visual orchestration and visual-stage state | Wavora |
 | Track-table content and product interaction state | Wavora |
 
 The visual callback receives a logical-pixel viewport for the stage. The
 viewport excludes the control rail and does not use the window device scale.
+
+Optics remains the owner of reusable widget mechanics. `wavora-ui` may select
+and combine those mechanics into product-specific variants, but it must not
+copy their interaction, accessibility, layout, or animation implementations.
+Components accept presentation props and return interaction results; they do
+not borrow the application's `App` state. Page modules resolve localized copy
+and translate component results into domain actions.
 
 ## Localization Boundary
 

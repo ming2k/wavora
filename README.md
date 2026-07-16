@@ -90,9 +90,9 @@ cargo audit --no-fetch
 ```
 
 Runtime dependencies include Vulkan 1.3, Wayland, GStreamer 1.20+, `appsrc`,
-`audioconvert`, `audioresample`, `volume`, and one of the PipeWire, PulseAudio,
-automatic audio, or ALSA output plugins. GStreamer's FLAC, MP3, and AAC decoder
-plugins are not required.
+`audiotestsrc`, `audioconvert`, `audioresample`, `volume`, and one of the
+PipeWire, PulseAudio, automatic audio, or ALSA output plugins. GStreamer's FLAC,
+MP3, and AAC decoder plugins are not required.
 
 The workspace is divided by responsibility into `wavora-core` (domain model),
 `wavora-audio-analysis` (pure PCM feature extraction), `wavora-i18n` (language

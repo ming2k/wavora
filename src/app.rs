@@ -1,6 +1,7 @@
-use crate::artwork::ArtworkCache;
+use crate::artwork::{ArtworkCache, ArtworkGallery};
 use crate::config::{
-    AppConfig, AppState, PersistenceError, PersistenceStore, PersistentApp, UserData,
+    AppConfig, AppState, PersistenceError, PersistenceStore, PersistentApp, PlaylistDisplay,
+    UserData,
 };
 use iris::{Application, Config, Input, TextBuf, request_animation_frame};
 use std::cell::RefCell;
@@ -66,16 +67,43 @@ pub struct PlaybackModeToast {
     pub offset_y: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TransientToast<'a> {
+    pub message: &'a str,
+    pub is_error: bool,
+    pub opacity: f32,
+    pub offset_y: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QueueSource {
     Library,
     Playlist(PlaylistId),
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum PlaylistLevel {
+    #[default]
+    Collection,
+    Detail,
+}
+
+/// Cached, UI-facing metadata for one playlist card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaylistPreview {
+    pub playlist_id: PlaylistId,
+    pub cover_candidates: Vec<String>,
+}
+
 const TABLE_ACTIVATION_INTERVAL: Duration = Duration::from_millis(400);
 const MODE_TOAST_ENTER: Duration = Duration::from_millis(180);
 const MODE_TOAST_HOLD: Duration = Duration::from_millis(900);
 const MODE_TOAST_EXIT: Duration = Duration::from_millis(420);
+const TOAST_ENTER: Duration = Duration::from_millis(180);
+const TOAST_SUCCESS_HOLD: Duration = Duration::from_millis(2_600);
+const TOAST_ERROR_HOLD: Duration = Duration::from_millis(4_600);
+const TOAST_EXIT: Duration = Duration::from_millis(260);
+const QUEUE_PANEL_TRANSITION_SECONDS: f32 = 0.28;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TableActivationTarget {
@@ -106,6 +134,7 @@ impl TableActivationTracker {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub tracks: Vec<Track>,
     pub current_index: Option<usize>,
@@ -134,7 +163,9 @@ pub struct App {
     persistence_store: PersistenceStore,
     catalog: Catalog,
     playlists: Vec<Playlist>,
+    playlist_previews: Vec<PlaylistPreview>,
     selected_playlist_id: Option<PlaylistId>,
+    playlist_level: PlaylistLevel,
     playlist_entries: Vec<PlaylistEntry>,
     playlist_tracks: Vec<Track>,
     pending_playlist_delete: Option<(PlaylistId, Instant)>,
@@ -142,6 +173,8 @@ pub struct App {
     audio: AudioController,
     playback_queue: PlaybackQueue,
     queue_source: QueueSource,
+    queue_panel_open: bool,
+    queue_panel_progress: f32,
     table_activation: TableActivationTracker,
     lyrics: Option<LyricsDocument>,
     lyrics_path: Option<PathBuf>,
@@ -156,6 +189,7 @@ pub struct App {
     toast_is_error: bool,
     playback_error: Option<String>,
     playback_mode_toast: Option<(PlaybackMode, Instant)>,
+    last_audible_volume: f32,
 }
 
 impl App {
@@ -188,6 +222,7 @@ impl App {
         let catalog = Catalog::open(persistence_store.catalog_path())?;
         let tracks = catalog.available_tracks()?;
         let playlists = catalog.playlists()?;
+        let playlist_previews = load_playlist_previews(&catalog, &playlists)?;
         let selected_playlist_id = playlists.first().map(|playlist| playlist.id);
         let playlist_entries = selected_playlist_id
             .map_or_else(|| Ok(Vec::new()), |id| catalog.playlist_entries(id))?;
@@ -271,7 +306,9 @@ impl App {
             persistence_store,
             catalog,
             playlists,
+            playlist_previews,
             selected_playlist_id,
+            playlist_level: PlaylistLevel::Collection,
             playlist_entries,
             playlist_tracks,
             pending_playlist_delete: None,
@@ -279,6 +316,8 @@ impl App {
             audio: AudioController::spawn(volume)?,
             playback_queue,
             queue_source: QueueSource::Library,
+            queue_panel_open: false,
+            queue_panel_progress: 0.0,
             table_activation: TableActivationTracker::default(),
             lyrics: None,
             lyrics_path: None,
@@ -293,6 +332,7 @@ impl App {
             toast_is_error: false,
             playback_error: None,
             playback_mode_toast: None,
+            last_audible_volume: if volume > 0.02 { volume } else { 0.72 },
         };
         app.refresh_current_lyrics();
         Ok(app)
@@ -311,6 +351,7 @@ impl App {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
+        let queue_animation_pending = self.update_queue_panel_animation(dt);
         let raw = input.as_raw();
         let animation_pending = if let Ok(mut visual) = self.visuals.write() {
             visual.update(
@@ -328,18 +369,23 @@ impl App {
         } else {
             false
         };
-        if animation_pending {
+        if animation_pending || queue_animation_pending {
             request_animation_frame();
         }
         if self.dirty_persistence && now >= self.persistence_save_due {
             self.save_persistence();
         }
-        if self
-            .toast
-            .as_ref()
-            .is_some_and(|(_, at)| now.duration_since(*at).as_secs() > 4)
-        {
-            self.toast = None;
+        if let Some(started_at) = self.toast.as_ref().map(|(_, started_at)| *started_at) {
+            if toast_animation(
+                now.saturating_duration_since(started_at),
+                self.toast_is_error,
+            )
+            .is_some()
+            {
+                request_animation_frame();
+            } else {
+                self.toast = None;
+            }
         }
         if let Some((_, started_at)) = self.playback_mode_toast {
             if mode_toast_animation(now.saturating_duration_since(started_at)).is_some() {
@@ -426,6 +472,7 @@ impl App {
                     Err(error) => self.set_toast(format!("Catalog scan failed: {error}"), true),
                 }
                 self.refresh_selected_playlist();
+                self.refresh_playlist_previews();
                 if rejected > 0 {
                     self.set_toast(
                         format!("{rejected} {}", text(self.language, Key::ScanSummary)),
@@ -665,9 +712,32 @@ impl App {
 
     pub fn apply_volume(&mut self) {
         self.volume = self.volume.clamp(0.0, 1.0);
+        if self.volume > 0.02 {
+            self.last_audible_volume = self.volume;
+        }
         self.audio.set_volume(self.volume);
         self.config.volume = self.volume;
         self.mark_persistence_dirty();
+    }
+
+    pub fn apply_volume_with_feedback(&mut self) {
+        self.apply_volume();
+        // While a track is loaded, the music itself is immediate level
+        // feedback. Opening a second output pipeline here can pre-empt the
+        // primary stream on exclusive or fallback audio backends.
+        if self.loaded_uri.is_none() {
+            self.audio.preview_volume(self.volume);
+        }
+    }
+
+    pub fn toggle_mute(&mut self) {
+        if self.volume <= 0.001 {
+            self.volume = self.last_audible_volume.max(0.05);
+        } else {
+            self.last_audible_volume = self.volume;
+            self.volume = 0.0;
+        }
+        self.apply_volume_with_feedback();
     }
 
     pub fn cycle_playback_mode(&mut self) {
@@ -697,6 +767,34 @@ impl App {
             opacity,
             offset_y,
         })
+    }
+
+    #[must_use]
+    pub const fn queue_panel_open(&self) -> bool {
+        self.queue_panel_open
+    }
+
+    #[must_use]
+    pub fn queue_panel_progress(&self) -> f32 {
+        smoothstep(self.queue_panel_progress)
+    }
+
+    pub fn toggle_queue_panel(&mut self) {
+        self.set_queue_panel_open(!self.queue_panel_open);
+    }
+
+    pub fn set_queue_panel_open(&mut self, open: bool) {
+        if self.queue_panel_open != open {
+            self.queue_panel_open = open;
+            request_animation_frame();
+        }
+    }
+
+    fn update_queue_panel_animation(&mut self, dt: f32) -> bool {
+        let (progress, pending) =
+            advance_queue_panel(self.queue_panel_progress, self.queue_panel_open, dt);
+        self.queue_panel_progress = progress;
+        pending
     }
 
     pub fn set_preset(&mut self, preset: usize) {
@@ -783,8 +881,41 @@ impl App {
     }
 
     #[must_use]
+    pub fn playlist_previews(&self) -> &[PlaylistPreview] {
+        &self.playlist_previews
+    }
+
+    #[must_use]
+    pub const fn playlist_display(&self) -> PlaylistDisplay {
+        self.config.playlist_display
+    }
+
+    pub fn set_playlist_display(&mut self, display: PlaylistDisplay) {
+        if self.config.playlist_display != display {
+            self.config.playlist_display = display;
+            self.mark_persistence_dirty();
+        }
+    }
+
+    #[must_use]
     pub fn selected_playlist_id(&self) -> Option<PlaylistId> {
         self.selected_playlist_id
+    }
+
+    #[must_use]
+    pub const fn playlist_detail_open(&self) -> bool {
+        matches!(self.playlist_level, PlaylistLevel::Detail)
+    }
+
+    pub fn open_playlist(&mut self, playlist_id: PlaylistId) {
+        self.select_playlist(playlist_id);
+        self.playlist_level = PlaylistLevel::Detail;
+    }
+
+    pub fn close_playlist_detail(&mut self) {
+        self.playlist_level = PlaylistLevel::Collection;
+        self.selected_playlist_row = None;
+        self.pending_playlist_delete = None;
     }
 
     #[must_use]
@@ -815,6 +946,11 @@ impl App {
         match self.catalog.create_playlist(&name) {
             Ok(playlist) => {
                 self.selected_playlist_id = Some(playlist.id);
+                self.playlist_level = PlaylistLevel::Detail;
+                self.playlist_previews.push(PlaylistPreview {
+                    playlist_id: playlist.id,
+                    cover_candidates: Vec::new(),
+                });
                 self.playlists.push(playlist);
                 self.playlists
                     .sort_by_key(|playlist| playlist.name.to_lowercase());
@@ -848,7 +984,10 @@ impl App {
         match self.catalog.delete_playlist(playlist_id) {
             Ok(()) => {
                 self.playlists.retain(|playlist| playlist.id != playlist_id);
+                self.playlist_previews
+                    .retain(|preview| preview.playlist_id != playlist_id);
                 self.selected_playlist_id = self.playlists.first().map(|playlist| playlist.id);
+                self.playlist_level = PlaylistLevel::Collection;
                 self.selected_playlist_row = None;
                 self.refresh_selected_playlist();
             }
@@ -985,10 +1124,31 @@ impl App {
             );
         match result {
             Ok((entries, tracks)) => {
+                if let Some(playlist_id) = self.selected_playlist_id {
+                    let preview = playlist_preview(playlist_id, &tracks);
+                    if let Some(existing) = self
+                        .playlist_previews
+                        .iter_mut()
+                        .find(|candidate| candidate.playlist_id == playlist_id)
+                    {
+                        *existing = preview;
+                    } else {
+                        self.playlist_previews.push(preview);
+                    }
+                }
                 self.playlist_entries = entries;
                 self.playlist_tracks = tracks;
             }
             Err(error) => self.set_toast(format!("Could not read playlist: {error}"), true),
+        }
+    }
+
+    fn refresh_playlist_previews(&mut self) {
+        match load_playlist_previews(&self.catalog, &self.playlists) {
+            Ok(previews) => self.playlist_previews = previews,
+            Err(error) => {
+                self.set_toast(format!("Could not read playlist covers: {error}"), true);
+            }
         }
     }
 
@@ -1177,15 +1337,23 @@ impl App {
     }
 
     #[must_use]
-    pub fn toast_message(&self) -> Option<&str> {
-        self.playback_error
-            .as_deref()
-            .or_else(|| self.toast.as_ref().map(|(message, _)| message.as_str()))
+    pub fn playback_error_message(&self) -> Option<&str> {
+        self.playback_error.as_deref()
     }
 
     #[must_use]
-    pub fn status_is_error(&self) -> bool {
-        self.playback_error.is_some() || (self.toast.is_some() && self.toast_is_error)
+    pub fn transient_toast(&self) -> Option<TransientToast<'_>> {
+        let (message, started_at) = self.toast.as_ref()?;
+        let (opacity, offset_y) = toast_animation(
+            Instant::now().saturating_duration_since(*started_at),
+            self.toast_is_error,
+        )?;
+        Some(TransientToast {
+            message,
+            is_error: self.toast_is_error,
+            opacity,
+            offset_y,
+        })
     }
 
     fn set_toast(&mut self, message: String, is_error: bool) {
@@ -1322,6 +1490,12 @@ pub fn run() -> Result<(), AppError> {
     let artwork = Rc::new(RefCell::new(ArtworkCache::default()));
     let build_artwork = Rc::clone(&artwork);
     let paint_artwork = Rc::clone(&artwork);
+    let playlist_artwork = Rc::new(RefCell::new(ArtworkGallery::default()));
+    let build_playlist_artwork = Rc::clone(&playlist_artwork);
+    let paint_playlist_artwork = Rc::clone(&playlist_artwork);
+    let queue_artwork = Rc::new(RefCell::new(ArtworkGallery::default()));
+    let build_queue_artwork = Rc::clone(&queue_artwork);
+    let paint_queue_artwork = Rc::clone(&queue_artwork);
     let mut visual_renderer = VisualRenderer::default();
     Application::run(
         window,
@@ -1331,10 +1505,58 @@ pub fn run() -> Result<(), AppError> {
             let artwork = build_artwork
                 .borrow_mut()
                 .select(app.current_track().map(|track| track.uri.as_str()));
-            crate::ui::build(&mut app, frame, size.x, size.y, artwork);
+            let playlist_artwork = {
+                let mut gallery = build_playlist_artwork.borrow_mut();
+                gallery.synchronize(
+                    app.playlist_previews()
+                        .iter()
+                        .map(|preview| (preview.playlist_id, preview.cover_candidates.as_slice())),
+                );
+                gallery.set_active(
+                    app.view == View::Playlists
+                        && !app.playlist_detail_open()
+                        && app.playlist_display() == PlaylistDisplay::Covers,
+                );
+                app.playlist_previews()
+                    .iter()
+                    .filter_map(|preview| {
+                        gallery
+                            .texture(preview.playlist_id)
+                            .map(|texture| (preview.playlist_id, texture))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let queue_artwork = {
+                let queue_items = app.queue_items();
+                let mut gallery = build_queue_artwork.borrow_mut();
+                gallery.synchronize(queue_items.iter().filter_map(|(_, track_index)| {
+                    app.tracks
+                        .get(*track_index)
+                        .map(|track| (track.id, std::slice::from_ref(&track.uri)))
+                }));
+                gallery.set_active(app.queue_panel_progress() > f32::EPSILON);
+                queue_items
+                    .iter()
+                    .filter_map(|(_, track_index)| {
+                        let track_id = app.tracks.get(*track_index)?.id;
+                        gallery.texture(track_id).map(|texture| (track_id, texture))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            crate::ui::build(
+                &mut app,
+                frame,
+                size.x,
+                size.y,
+                artwork,
+                &playlist_artwork,
+                &queue_artwork,
+            );
         },
         Some(move |host| {
             paint_artwork.borrow_mut().prepare(&host);
+            paint_playlist_artwork.borrow_mut().prepare(&host);
+            paint_queue_artwork.borrow_mut().prepare(&host);
             visual_renderer.paint(host, &paint_visuals);
         }),
     )?;
@@ -1370,6 +1592,37 @@ fn argument_to_path(argument: std::ffi::OsString) -> PathBuf {
     uri_path.unwrap_or_else(|| PathBuf::from(argument))
 }
 
+fn load_playlist_previews(
+    catalog: &Catalog,
+    playlists: &[Playlist],
+) -> Result<Vec<PlaylistPreview>, CatalogError> {
+    playlists
+        .iter()
+        .map(|playlist| {
+            catalog
+                .playlist_tracks(playlist.id)
+                .map(|tracks| playlist_preview(playlist.id, &tracks))
+        })
+        .collect()
+}
+
+fn playlist_preview(playlist_id: PlaylistId, tracks: &[Track]) -> PlaylistPreview {
+    const COVER_CANDIDATE_LIMIT: usize = 12;
+
+    let mut seen = HashSet::new();
+    let cover_candidates = tracks
+        .iter()
+        .filter(|track| track.available)
+        .filter(|track| seen.insert(track.uri.as_str()))
+        .map(|track| track.uri.clone())
+        .take(COVER_CANDIDATE_LIMIT)
+        .collect();
+    PlaylistPreview {
+        playlist_id,
+        cover_candidates,
+    }
+}
+
 fn mode_toast_animation(elapsed: Duration) -> Option<(f32, f32)> {
     if elapsed < MODE_TOAST_ENTER {
         let progress = elapsed.as_secs_f32() / MODE_TOAST_ENTER.as_secs_f32();
@@ -1388,9 +1641,62 @@ fn mode_toast_animation(elapsed: Duration) -> Option<(f32, f32)> {
     Some((1.0 - eased, -4.0 * eased))
 }
 
+fn toast_animation(elapsed: Duration, is_error: bool) -> Option<(f32, f32)> {
+    if elapsed < TOAST_ENTER {
+        let progress = elapsed.as_secs_f32() / TOAST_ENTER.as_secs_f32();
+        let eased = 1.0 - (1.0 - progress).powi(3);
+        return Some((eased, -10.0 * (1.0 - eased)));
+    }
+    let hold = if is_error {
+        TOAST_ERROR_HOLD
+    } else {
+        TOAST_SUCCESS_HOLD
+    };
+    if elapsed < TOAST_ENTER + hold {
+        return Some((1.0, 0.0));
+    }
+    let exit_elapsed = elapsed.saturating_sub(TOAST_ENTER + hold);
+    if exit_elapsed >= TOAST_EXIT {
+        return None;
+    }
+    let progress = exit_elapsed.as_secs_f32() / TOAST_EXIT.as_secs_f32();
+    let eased = progress * progress * (3.0 - 2.0 * progress);
+    Some((1.0 - eased, -6.0 * eased))
+}
+
+fn advance_queue_panel(progress: f32, open: bool, dt: f32) -> (f32, bool) {
+    let target = if open { 1.0 } else { 0.0 };
+    let step = (dt.max(0.0) / QUEUE_PANEL_TRANSITION_SECONDS).clamp(0.0, 1.0);
+    let progress = if progress < target {
+        (progress + step).min(target)
+    } else {
+        (progress - step).max(target)
+    };
+    (progress, (progress - target).abs() > f32::EPSILON)
+}
+
+fn smoothstep(value: f32) -> f32 {
+    let value = value.clamp(0.0, 1.0);
+    value * value * (3.0 - 2.0 * value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn preview_track(uri: &str, available: bool) -> Track {
+        Track {
+            id: TrackId::new(),
+            uri: uri.to_owned(),
+            title: "Track".to_owned(),
+            artist: "Artist".to_owned(),
+            album: "Album".to_owned(),
+            duration_ms: 1_000,
+            codec: "FLAC".to_owned(),
+            favorite: false,
+            available,
+        }
+    }
 
     fn library_target(track_id: TrackId) -> TableActivationTarget {
         TableActivationTarget::Library {
@@ -1469,6 +1775,67 @@ mod tests {
         assert_eq!(
             mode_toast_animation(MODE_TOAST_ENTER + MODE_TOAST_HOLD + MODE_TOAST_EXIT),
             None
+        );
+    }
+
+    #[test]
+    fn transient_toast_slides_down_and_keeps_errors_visible_longer() {
+        let entering = toast_animation(Duration::from_millis(60), false).expect("entering");
+        assert!(entering.0 > 0.0 && entering.0 < 1.0);
+        assert!(entering.1 < 0.0);
+
+        assert_eq!(
+            toast_animation(TOAST_ENTER + Duration::from_millis(200), false),
+            Some((1.0, 0.0))
+        );
+
+        let exiting = toast_animation(
+            TOAST_ENTER + TOAST_SUCCESS_HOLD + Duration::from_millis(100),
+            false,
+        )
+        .expect("exiting");
+        assert!(exiting.0 > 0.0 && exiting.0 < 1.0);
+        assert!(exiting.1 < 0.0);
+        assert_eq!(
+            toast_animation(TOAST_ENTER + TOAST_SUCCESS_HOLD + TOAST_EXIT, false),
+            None
+        );
+        assert!(toast_animation(TOAST_ENTER + TOAST_SUCCESS_HOLD + TOAST_EXIT, true).is_some());
+        assert_eq!(
+            toast_animation(TOAST_ENTER + TOAST_ERROR_HOLD + TOAST_EXIT, true),
+            None
+        );
+    }
+
+    #[test]
+    fn queue_panel_animation_opens_and_closes_without_jumping() {
+        let (opening, pending) = advance_queue_panel(0.0, true, 0.07);
+        assert!(opening > 0.0 && opening < 1.0);
+        assert!(pending);
+
+        let (reversing, pending) = advance_queue_panel(opening, false, 0.035);
+        assert!(reversing > 0.0 && reversing < opening);
+        assert!(pending);
+
+        assert_eq!(advance_queue_panel(reversing, false, 1.0), (0.0, false));
+        assert_eq!(advance_queue_panel(opening, true, 1.0), (1.0, false));
+    }
+
+    #[test]
+    fn playlist_preview_keeps_local_available_candidates_in_order() {
+        let playlist_id = PlaylistId::new();
+        let tracks = [
+            preview_track("file:///music/a.flac", true),
+            preview_track("file:///music/a.flac", true),
+            preview_track("file:///music/missing.flac", false),
+            preview_track("file:///music/b.flac", true),
+        ];
+
+        let preview = playlist_preview(playlist_id, &tracks);
+
+        assert_eq!(
+            preview.cover_candidates,
+            ["file:///music/a.flac", "file:///music/b.flac"]
         );
     }
 }

@@ -24,8 +24,14 @@ behavior. For the design principles behind the stage, use
 | Localization | Preset names, descriptions, controls, and metrics come from `wavora-i18n` |
 
 The inspector keeps its heading and Composition/Atmosphere tabs outside the
-scroll viewport. Each tab owns a separate scroll position. Composition uses a
-single preset selector plus a response card; Atmosphere separates scene
+scroll viewport. The two views opt into Optics' compact indicator tab variant:
+hover adds a quiet themed surface, while selection is shown by an accent bar
+whose independently sprung edges stretch and settle during a switch. This
+avoids forcing the tab and panel backgrounds to match. The two hit targets
+split the available rail evenly; the indicator is centred to the label width
+and occupies a separate track below the clickable content. Each tab owns a
+separate scroll position. Composition uses a single
+preset selector plus a response card; Atmosphere separates scene
 layers, material, and light-source editing into distinct surfaces. Boolean
 layers use checkboxes, source mutations use buttons, and exclusive choices use
 dropdowns so visual style follows interaction semantics. The inspector and
