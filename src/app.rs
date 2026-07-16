@@ -104,6 +104,7 @@ const TOAST_SUCCESS_HOLD: Duration = Duration::from_millis(2_600);
 const TOAST_ERROR_HOLD: Duration = Duration::from_millis(4_600);
 const TOAST_EXIT: Duration = Duration::from_millis(260);
 const QUEUE_PANEL_TRANSITION_SECONDS: f32 = 0.28;
+const QUEUE_HOVER_DETAILS_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TableActivationTarget {
@@ -131,6 +132,27 @@ impl TableActivationTracker {
         });
         self.pending = (!activates).then_some((target, now));
         activates
+    }
+}
+
+#[derive(Debug, Default)]
+struct QueueHoverTracker {
+    pending: Option<(usize, Instant)>,
+}
+
+impl QueueHoverTracker {
+    fn update(&mut self, hovered: Option<usize>, now: Instant) -> bool {
+        if self.pending.map(|(position, _)| position) != hovered {
+            self.pending = hovered.map(|position| (position, now));
+        }
+        hovered.is_some_and(|position| !self.details_visible(position, now))
+    }
+
+    fn details_visible(&self, position: usize, now: Instant) -> bool {
+        self.pending.is_some_and(|(pending, started_at)| {
+            pending == position
+                && now.saturating_duration_since(started_at) >= QUEUE_HOVER_DETAILS_DELAY
+        })
     }
 }
 
@@ -175,6 +197,7 @@ pub struct App {
     queue_source: QueueSource,
     queue_panel_open: bool,
     queue_panel_progress: f32,
+    queue_hover: QueueHoverTracker,
     table_activation: TableActivationTracker,
     lyrics: Option<LyricsDocument>,
     lyrics_path: Option<PathBuf>,
@@ -318,6 +341,7 @@ impl App {
             queue_source: QueueSource::Library,
             queue_panel_open: false,
             queue_panel_progress: 0.0,
+            queue_hover: QueueHoverTracker::default(),
             table_activation: TableActivationTracker::default(),
             lyrics: None,
             lyrics_path: None,
@@ -1294,6 +1318,17 @@ impl App {
     }
 
     #[must_use]
+    pub fn queue_hover_details_visible(&self, position: usize) -> bool {
+        self.queue_hover.details_visible(position, Instant::now())
+    }
+
+    pub fn update_queue_hover(&mut self, hovered: Option<usize>) {
+        if self.queue_hover.update(hovered, Instant::now()) {
+            request_animation_frame();
+        }
+    }
+
+    #[must_use]
     pub fn config_path(&self) -> &Path {
         self.persistence_store.config_path()
     }
@@ -1746,6 +1781,23 @@ mod tests {
         assert!(!tracker.register(target, now));
         assert!(tracker.register(target, now + Duration::from_millis(100)));
         assert!(!tracker.register(target, now + Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn queue_details_require_continuous_hover_dwell() {
+        let mut tracker = QueueHoverTracker::default();
+        let now = Instant::now();
+
+        assert!(tracker.update(Some(3), now));
+        assert!(!tracker.details_visible(
+            3,
+            now + QUEUE_HOVER_DETAILS_DELAY.saturating_sub(Duration::from_millis(1))
+        ));
+        assert!(tracker.details_visible(3, now + QUEUE_HOVER_DETAILS_DELAY));
+
+        assert!(tracker.update(Some(4), now + QUEUE_HOVER_DETAILS_DELAY));
+        assert!(!tracker.details_visible(4, now + QUEUE_HOVER_DETAILS_DELAY));
+        assert!(!tracker.update(None, now + QUEUE_HOVER_DETAILS_DELAY));
     }
 
     #[test]

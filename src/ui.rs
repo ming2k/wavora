@@ -1,7 +1,8 @@
 use crate::app::{App, View, VisualInspectorTab};
 use crate::config::PlaylistDisplay;
 use iris::{
-    Align, Color, Frame, Icon, LayoutOpts, OverlayOpts, Rect, TableColumn, TableOpts, Theme,
+    Align, Color, Frame, Icon, LayoutOpts, OverlayOpts, Rect, Response, TableColumn, TableOpts,
+    Theme,
 };
 use std::ffi::c_void;
 use wavora_core::{PlaybackMode, PlaylistId, TrackId, format_duration};
@@ -34,8 +35,41 @@ const VISUAL_MIN_SIDE_STAGE_WIDTH: f32 = 480.0;
 const VISUAL_STAGE_GAP: f32 = 14.0;
 const VISUAL_COMPACT_STAGE_HEIGHT: f32 = 340.0;
 const QUEUE_PANEL_WIDTH: f32 = 300.0;
+const QUEUE_COMPACT_WIDTH: f32 = 100.0;
+const QUEUE_FULL_MIN_CONTENT_WIDTH: f32 = 520.0;
 const QUEUE_ITEM_HEIGHT: f32 = 76.0;
 const QUEUE_ARTWORK_SIZE: f32 = 60.0;
+const QUEUE_SCROLLBAR_GUTTER: f32 = 8.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueueLayout {
+    Detailed,
+    ArtworkOnly,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct QueuePanelAnimation {
+    reserved_width: f32,
+    slide_offset: f32,
+}
+
+#[derive(Clone, Copy)]
+struct QueueItem<'a> {
+    position: usize,
+    title: &'a str,
+    metadata: Option<&'a str>,
+    artwork: Option<*mut c_void>,
+    active: bool,
+}
+
+impl QueueLayout {
+    const fn width(self) -> f32 {
+        match self {
+            Self::Detailed => QUEUE_PANEL_WIDTH,
+            Self::ArtworkOnly => QUEUE_COMPACT_WIDTH,
+        }
+    }
+}
 
 #[must_use]
 pub fn theme(preset: usize) -> Theme {
@@ -56,6 +90,9 @@ pub fn build(
     let show_sidebar = width >= 760.0;
     let queue_progress = app.queue_panel_progress();
     let show_queue = queue_progress > f32::EPSILON;
+    if !show_queue {
+        app.update_queue_hover(None);
+    }
     let status_visible = app.playback_error_message().is_some();
     let language = app.language();
     let sidebar_width = if show_sidebar {
@@ -63,7 +100,9 @@ pub fn build(
     } else {
         0.0
     };
-    let queue_width = QUEUE_PANEL_WIDTH * queue_progress;
+    let queue_layout = queue_layout(width, sidebar_width, show_sidebar);
+    let queue_animation = queue_panel_animation(queue_layout, queue_progress);
+    let queue_width = queue_animation.reserved_width;
     let queue_gap = GAP * queue_progress;
     let panel_width = (width
         - ROOT_PAD * 2.0
@@ -71,7 +110,7 @@ pub fn build(
         - queue_width
         - if show_sidebar { GAP } else { 0.0 }
         - queue_gap)
-        .max(320.0);
+        .max(1.0);
     let root_gap_count =
         2.0 + if show_sidebar { 0.0 } else { 1.0 } + if status_visible { 1.0 } else { 0.0 };
     let chrome_height = TOP_BAR_HEIGHT
@@ -170,10 +209,11 @@ pub fn build(
                         queue(
                             app,
                             frame,
-                            queue_width,
                             content_height,
                             language,
                             queue_artwork,
+                            queue_layout,
+                            queue_animation,
                         );
                     }
                 },
@@ -538,6 +578,30 @@ fn content_surface_alpha(view: View) -> u8 {
         View::Visuals => 92,
         View::Home => 128,
         View::Library | View::Favorites | View::Playlists | View::Lyrics | View::Settings => 148,
+    }
+}
+
+fn queue_layout(width: f32, sidebar_width: f32, show_sidebar: bool) -> QueueLayout {
+    let main_width_with_detailed_queue = width
+        - ROOT_PAD * 2.0
+        - sidebar_width
+        - if show_sidebar { GAP } else { 0.0 }
+        - GAP
+        - QUEUE_PANEL_WIDTH;
+    if main_width_with_detailed_queue >= QUEUE_FULL_MIN_CONTENT_WIDTH {
+        QueueLayout::Detailed
+    } else {
+        QueueLayout::ArtworkOnly
+    }
+}
+
+fn queue_panel_animation(layout: QueueLayout, progress: f32) -> QueuePanelAnimation {
+    let progress = progress.clamp(0.0, 1.0);
+    QueuePanelAnimation {
+        reserved_width: layout.width() * progress,
+        // Keep the fixed-width panel fully beyond the window edge at the
+        // beginning of the transition, including the root's trailing inset.
+        slide_offset: ROOT_PAD * (1.0 - progress),
     }
 }
 
@@ -2135,59 +2199,103 @@ fn settings(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
 fn queue(
     app: &mut App,
     frame: &mut Frame,
-    width: f32,
     height: f32,
     language: Language,
     artwork: &[(TrackId, *mut c_void)],
+    layout: QueueLayout,
+    animation: QueuePanelAnimation,
 ) {
+    frame.row_ex(
+        &LayoutOpts {
+            width: animation.reserved_width,
+            height,
+            gap: 0.0,
+            cross: Align::Stretch,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            frame.spacer(animation.slide_offset);
+            queue_panel(app, frame, height, language, artwork, layout);
+        },
+    );
+}
+
+fn queue_panel(
+    app: &mut App,
+    frame: &mut Frame,
+    height: f32,
+    language: Language,
+    artwork: &[(TrackId, *mut c_void)],
+    layout: QueueLayout,
+) {
+    let detailed = layout == QueueLayout::Detailed;
+    let panel_pad = if detailed { 16.0 } else { 10.0 };
     frame.column_ex(
         &LayoutOpts {
-            width,
-            gap: 8.0,
-            pad: 16.0,
+            width: layout.width(),
+            gap: if detailed { 8.0 } else { 6.0 },
+            pad: panel_pad,
             cross: Align::Stretch,
             bg: Color::rgba(9, 12, 17, 208),
             radius: 22.0,
             ..LayoutOpts::default()
         },
         |frame| {
-            frame.row_ex(
-                &LayoutOpts {
-                    cross: Align::Center,
-                    ..LayoutOpts::default()
-                },
-                |frame| {
-                    frame.heading(text(language, Key::UpNext), 2);
-                    frame.flex(1.0);
-                    frame.label_sized(text(language, Key::Queue), 9.0);
-                },
-            );
-            frame.separator();
-            frame.size_next(0.0, (height - 70.0).max(150.0));
+            if detailed {
+                frame.row_ex(
+                    &LayoutOpts {
+                        cross: Align::Center,
+                        ..LayoutOpts::default()
+                    },
+                    |frame| {
+                        frame.heading(text(language, Key::UpNext), 2);
+                        frame.flex(1.0);
+                        frame.label_sized(text(language, Key::Queue), 9.0);
+                    },
+                );
+                frame.separator();
+            }
+            let header_height = if detailed { 70.0 } else { panel_pad * 2.0 };
+            frame.size_next(0.0, (height - header_height).max(150.0));
             frame.scroll("queue-scroll", |frame| {
-                if app.tracks.is_empty() {
+                if app.tracks.is_empty() && detailed {
                     frame.label_sized(text(language, Key::EmptyQueue), 11.0);
                 }
+                let mut hovered_position = None;
+                let mut clicked_position = None;
                 for (queue_position, index) in app.queue_items() {
                     let track = &app.tracks[index];
                     let track_id = track.id;
                     let title = track.title.clone();
-                    let metadata = format!("{}  ·  {}", track.artist, track.album);
+                    let metadata = track_metadata(&track.artist, &track.album);
                     let texture = artwork.iter().find_map(|(candidate, texture)| {
                         (*candidate == track_id).then_some(*texture)
                     });
                     let active = app.playback_queue_position() == Some(queue_position);
-                    if queue_item(
-                        app,
+                    let show_details = app.queue_hover_details_visible(queue_position);
+                    let response = queue_item(
+                        app.preset,
                         frame,
-                        queue_position,
-                        &title,
-                        &metadata,
-                        texture,
-                        active,
-                    ) {
-                        app.play_queue_position(queue_position);
+                        QueueItem {
+                            position: queue_position,
+                            title: &title,
+                            metadata: metadata.as_deref(),
+                            artwork: texture,
+                            active,
+                        },
+                        layout,
+                        show_details,
+                    );
+                    if response.hovered {
+                        hovered_position = Some(queue_position);
                     }
+                    if response.clicked {
+                        clicked_position = Some(queue_position);
+                    }
+                }
+                app.update_queue_hover(hovered_position);
+                if let Some(position) = clicked_position {
+                    app.play_queue_position(position);
                 }
             });
         },
@@ -2195,26 +2303,28 @@ fn queue(
 }
 
 fn queue_item(
-    app: &App,
+    preset: usize,
     frame: &mut Frame,
-    queue_position: usize,
-    title: &str,
-    metadata: &str,
-    artwork: Option<*mut c_void>,
-    active: bool,
-) -> bool {
-    let accent = PRESETS[app.preset % PRESETS.len()].accent;
-    let base = theme(app.preset);
-    let mut clicked = false;
-    frame.push_id(&format!("queue-item-{queue_position}"));
-    frame.size_next(0.0, QUEUE_ITEM_HEIGHT);
-    frame.row_ex(
+    item: QueueItem<'_>,
+    layout: QueueLayout,
+    show_details: bool,
+) -> Response {
+    let accent = PRESETS[preset % PRESETS.len()].accent;
+    let base = theme(preset);
+    let detailed = layout == QueueLayout::Detailed;
+    let row_pad = if detailed { 8.0 } else { 6.0 };
+    let row_gap = if detailed { 10.0 } else { 0.0 };
+    let id = format!("queue-item-{}", item.position);
+    frame.set_theme(base.with_border_width(0.0));
+    let (response, ()) = frame.pressable_row(
+        &id,
+        item.title,
         &LayoutOpts {
             height: QUEUE_ITEM_HEIGHT,
-            gap: 10.0,
-            pad: 8.0,
+            gap: row_gap,
+            pad: row_pad,
             cross: Align::Center,
-            bg: if active {
+            bg: if item.active {
                 Color::rgba(accent[0], accent[1], accent[2], 18)
             } else {
                 Color::TRANSPARENT
@@ -2222,8 +2332,19 @@ fn queue_item(
             radius: 12.0,
             ..LayoutOpts::default()
         },
-        |frame| {
-            album_art(app, frame, artwork, QUEUE_ARTWORK_SIZE);
+        |frame, response| {
+            queue_album_art(frame, item.artwork, QUEUE_ARTWORK_SIZE, response.hovered);
+            if !detailed {
+                return;
+            }
+
+            let text_width = (layout.width()
+                - 32.0
+                - QUEUE_SCROLLBAR_GUTTER
+                - row_pad * 2.0
+                - QUEUE_ARTWORK_SIZE
+                - row_gap)
+                .max(1.0);
             frame.column_ex(
                 &LayoutOpts {
                     flex: 1.0,
@@ -2231,34 +2352,136 @@ fn queue_item(
                     ..LayoutOpts::default()
                 },
                 |frame| {
-                    frame.set_theme(base.with_fg(if active {
+                    frame.set_theme(base.with_fg(if item.active {
                         Color::rgba(accent[0], accent[1], accent[2], 255)
                     } else {
                         base.fg()
                     }));
-                    clicked |= frame.link(&ellipsize(title, 25));
+                    let visible_title =
+                        ellipsize_to_width(frame, item.title, base.font_size(), text_width);
+                    frame.label_compact_sized(&visible_title, base.font_size());
                     frame.set_theme(
                         base.with_fg(Color::rgba(174, 177, 184, 255))
                             .with_font_size(11.0),
                     );
-                    frame.row_ex(
-                        &LayoutOpts {
-                            gap: 5.0,
-                            cross: Align::Center,
-                            ..LayoutOpts::default()
-                        },
-                        |frame| {
-                            frame.icon(Icon::Play, 14.0);
-                            clicked |= frame.link(&ellipsize(metadata, 29));
-                        },
-                    );
+                    if let Some(metadata) = item.metadata {
+                        let visible_metadata =
+                            ellipsize_to_width(frame, metadata, 11.0, text_width);
+                        frame.label_compact_sized(&visible_metadata, 11.0);
+                    }
                     frame.set_theme(base);
                 },
             );
         },
     );
-    frame.pop_id();
-    clicked
+    frame.set_theme(base);
+    if response.hovered && show_details {
+        queue_item_hover_card(
+            frame,
+            item.position,
+            response.rect,
+            item.title,
+            item.metadata,
+        );
+    }
+    response
+}
+
+#[allow(unsafe_code)]
+fn queue_album_art(frame: &mut Frame, artwork: Option<*mut c_void>, size: f32, hovered: bool) {
+    frame.row_ex(
+        &LayoutOpts {
+            width: size,
+            height: size,
+            gap: -size,
+            cross: Align::Stretch,
+            ..LayoutOpts::default()
+        },
+        |frame| {
+            if let Some(artwork) = artwork {
+                // SAFETY: ArtworkCache owns this texture through the complete frame.
+                unsafe { frame.image(artwork.cast(), size, size) };
+            } else {
+                frame.column_ex(
+                    &LayoutOpts {
+                        width: size,
+                        height: size,
+                        cross: Align::Center,
+                        bg: Color::rgba(255, 255, 255, 12),
+                        radius: 8.0,
+                        ..LayoutOpts::default()
+                    },
+                    |frame| {
+                        frame.flex(1.0);
+                        frame.spacer(0.0);
+                        frame.icon(Icon::Radio, (size * 0.38).max(16.0));
+                        frame.flex(1.0);
+                        frame.spacer(0.0);
+                    },
+                );
+            }
+            frame.column_ex(
+                &LayoutOpts {
+                    width: size,
+                    height: size,
+                    cross: Align::Center,
+                    bg: if hovered {
+                        Color::rgba(0, 0, 0, 112)
+                    } else {
+                        Color::TRANSPARENT
+                    },
+                    radius: 8.0,
+                    ..LayoutOpts::default()
+                },
+                |frame| {
+                    if hovered {
+                        frame.flex(1.0);
+                        frame.spacer(0.0);
+                        frame.icon(Icon::Play, 24.0);
+                        frame.flex(1.0);
+                        frame.spacer(0.0);
+                    }
+                },
+            );
+        },
+    );
+}
+
+fn queue_item_hover_card(
+    frame: &mut Frame,
+    queue_position: usize,
+    anchor: Rect,
+    title: &str,
+    metadata: Option<&str>,
+) {
+    const CARD_WIDTH: f32 = 260.0;
+    const CARD_GAP: f32 = 8.0;
+
+    frame.layer(
+        &format!("queue-item-details-{queue_position}"),
+        Rect {
+            x: (anchor.x - CARD_WIDTH - CARD_GAP).max(8.0),
+            y: anchor.y,
+            w: CARD_WIDTH,
+            h: 0.0,
+        },
+        &OverlayOpts {
+            gap: 5.0,
+            pad: 10.0,
+            cross: Align::Stretch,
+            bg: Color::rgba(30, 32, 44, 250),
+            border: Color::rgba(255, 255, 255, 18),
+            border_width: 1.0,
+            radius: 12.0,
+            min_width: CARD_WIDTH,
+        },
+        |frame| {
+            frame.label_wrapped_sized(title, 12.5, CARD_WIDTH - 20.0);
+            if let Some(metadata) = metadata {
+                frame.label_wrapped_sized(metadata, 10.5, CARD_WIDTH - 20.0);
+            }
+        },
+    );
 }
 
 fn player_bar(
@@ -2327,8 +2550,8 @@ fn now_playing_panel(
     let current = app.current_track().map(|track| {
         (
             ellipsize(&track.title, if width >= 280.0 { 30 } else { 22 }),
-            ellipsize(&track.artist, if width >= 280.0 { 24 } else { 18 }),
-            track.codec.clone(),
+            track_metadata(&track.artist, &track.album)
+                .map(|metadata| ellipsize(&metadata, if width >= 280.0 { 30 } else { 22 })),
             track.favorite,
         )
     });
@@ -2354,23 +2577,29 @@ fn now_playing_panel(
                     ..LayoutOpts::default()
                 },
                 |frame| {
-                    if let Some((title, artist, codec, _)) = current.as_ref() {
+                    if let Some((title, metadata, _)) = current.as_ref() {
                         frame.label_compact_sized(title, 13.0);
-                        frame.label_compact_sized(&format!("{artist}  ·  {codec}"), 9.5);
+                        if let Some(metadata) = metadata {
+                            frame.label_compact_sized(metadata, 9.5);
+                        }
                     } else {
                         frame.label_compact_sized(text(language, Key::NothingPlaying), 12.5);
                         frame.label_compact_sized(text(language, Key::AddLocalTrack), 9.5);
                     }
                 },
             );
-            if show_favorite && let Some((_, _, _, favorite)) = current {
-                frame.size_next(44.0, 40.0);
-                if frame.icon_button_badged(Icon::Star, "", 26.0, favorite) {
+            if show_favorite && let Some((_, _, favorite)) = current {
+                if favorite_toggle(frame, favorite) {
                     app.toggle_current_favorite();
                 }
             }
         },
     );
+}
+
+fn favorite_toggle(frame: &mut Frame, favorite: bool) -> bool {
+    frame.size_next(44.0, 40.0);
+    frame.icon_toggle_button(Icon::StarRounded, Icon::StarRoundedFilled, 26.0, favorite)
 }
 
 #[allow(unsafe_code)]
@@ -2768,6 +2997,47 @@ fn ellipsize(value: &str, max_chars: usize) -> String {
     result
 }
 
+fn ellipsize_to_width(frame: &Frame, value: &str, size: f32, max_width: f32) -> String {
+    const ELLIPSIS: &str = "…";
+
+    if frame.measure_text(value, size).width <= max_width {
+        return value.to_owned();
+    }
+
+    if frame.measure_text(ELLIPSIS, size).width > max_width {
+        return String::new();
+    }
+
+    let characters = value.chars().collect::<Vec<_>>();
+    let mut low = 0;
+    let mut high = characters.len();
+    while low < high {
+        let candidate = (low + high).div_ceil(2);
+        let mut text = characters[..candidate].iter().collect::<String>();
+        text.push_str(ELLIPSIS);
+        if frame.measure_text(&text, size).width <= max_width {
+            low = candidate;
+        } else {
+            high = candidate - 1;
+        }
+    }
+    let mut result = characters[..low].iter().collect::<String>();
+    result.push_str(ELLIPSIS);
+    result
+}
+
+fn track_metadata(artist: &str, album: &str) -> Option<String> {
+    let artist = artist.trim();
+    let album = album.trim();
+    let album = (!album.is_empty() && !album.eq_ignore_ascii_case("Local music")).then_some(album);
+    match (!artist.is_empty(), album) {
+        (true, Some(album)) => Some(format!("{artist}  ·  {album}")),
+        (true, None) => Some(artist.to_owned()),
+        (false, Some(album)) => Some(album.to_owned()),
+        (false, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2776,6 +3046,37 @@ mod tests {
     fn ellipsis_is_unicode_safe() {
         assert_eq!(ellipsize("春日长标题", 4), "春日长…");
         assert_eq!(ellipsize("short", 8), "short");
+    }
+
+    #[test]
+    fn queue_collapses_to_artwork_before_squeezing_the_content_panel() {
+        assert_eq!(queue_layout(1_380.0, 190.0, true), QueueLayout::Detailed);
+        assert_eq!(queue_layout(1_000.0, 190.0, true), QueueLayout::ArtworkOnly);
+        assert_eq!(queue_layout(759.0, 0.0, false), QueueLayout::ArtworkOnly);
+    }
+
+    #[test]
+    fn queue_transition_reserves_space_without_squeezing_its_inner_layout() {
+        let opening = queue_panel_animation(QueueLayout::ArtworkOnly, 0.4);
+        assert!((opening.reserved_width - 40.0).abs() < f32::EPSILON);
+        assert!((opening.slide_offset - ROOT_PAD * 0.6).abs() < f32::EPSILON);
+
+        let open = queue_panel_animation(QueueLayout::ArtworkOnly, 1.0);
+        assert!((open.reserved_width - QUEUE_COMPACT_WIDTH).abs() < f32::EPSILON);
+        assert!(open.slide_offset.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn track_metadata_omits_the_local_music_placeholder() {
+        assert_eq!(
+            track_metadata("小瀬村晶", "Local music").as_deref(),
+            Some("小瀬村晶")
+        );
+        assert_eq!(
+            track_metadata("小瀬村晶", "Light Dance").as_deref(),
+            Some("小瀬村晶  ·  Light Dance")
+        );
+        assert_eq!(track_metadata("", "Local music"), None);
     }
 
     #[test]
