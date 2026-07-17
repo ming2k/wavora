@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 use wavora_core::PlaybackMode;
 use wavora_i18n::LanguagePreference;
-use wavora_visuals::Atmosphere;
+use wavora_visuals::{AmbientLayer, VisualStage};
 
-const CONFIG_VERSION: u32 = 8;
+const CONFIG_VERSION: u32 = 9;
 const STATE_VERSION: u32 = 1;
 const USER_DATA_VERSION: u32 = 1;
 static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -23,14 +23,21 @@ pub struct AppConfig {
     pub library_roots: Vec<PathBuf>,
     pub volume: f32,
     pub playback_mode: PlaybackMode,
-    pub visual_preset: usize,
-    pub visual_intensity: f32,
-    pub visual_motion: f32,
-    pub visual_depth: f32,
-    pub visual_glow: f32,
-    pub atmosphere: Atmosphere,
+    pub visual_stage: VisualStage,
     pub language: LanguagePreference,
     pub playlist_display: PlaylistDisplay,
+    #[serde(rename = "visual_preset", skip_serializing)]
+    legacy_visual_preset: Option<usize>,
+    #[serde(rename = "visual_intensity", skip_serializing)]
+    legacy_visual_intensity: Option<f32>,
+    #[serde(rename = "visual_motion", skip_serializing)]
+    legacy_visual_motion: Option<f32>,
+    #[serde(rename = "visual_depth", skip_serializing)]
+    legacy_visual_depth: Option<f32>,
+    #[serde(rename = "visual_glow", skip_serializing)]
+    legacy_visual_glow: Option<f32>,
+    #[serde(rename = "atmosphere", skip_serializing)]
+    legacy_atmosphere: Option<AmbientLayer>,
     #[serde(rename = "recent_uris", skip_serializing)]
     legacy_recent_uris: Vec<String>,
     #[serde(rename = "favorite_uris", skip_serializing)]
@@ -46,14 +53,15 @@ impl Default for AppConfig {
             library_roots: Vec::new(),
             volume: 0.72,
             playback_mode: PlaybackMode::Sequential,
-            visual_preset: 0,
-            visual_intensity: 1.0,
-            visual_motion: 1.0,
-            visual_depth: 1.0,
-            visual_glow: 0.9,
-            atmosphere: Atmosphere::default(),
+            visual_stage: VisualStage::default(),
             language: LanguagePreference::System,
             playlist_display: PlaylistDisplay::List,
+            legacy_visual_preset: None,
+            legacy_visual_intensity: None,
+            legacy_visual_motion: None,
+            legacy_visual_depth: None,
+            legacy_visual_glow: None,
+            legacy_atmosphere: None,
             legacy_recent_uris: Vec::new(),
             legacy_favorite_uris: Vec::new(),
             legacy_last_track_uri: None,
@@ -74,12 +82,25 @@ impl AppConfig {
     pub fn normalize(&mut self) {
         self.version = CONFIG_VERSION;
         self.volume = self.volume.clamp(0.0, 1.0);
-        self.visual_preset %= wavora_visuals::PRESETS.len();
-        self.visual_intensity = self.visual_intensity.clamp(0.45, 1.75);
-        self.visual_motion = self.visual_motion.clamp(0.35, 1.65);
-        self.visual_depth = self.visual_depth.clamp(0.50, 1.50);
-        self.visual_glow = self.visual_glow.clamp(0.25, 1.50);
-        self.atmosphere = std::mem::take(&mut self.atmosphere).normalized();
+        if let Some(effect) = self.legacy_visual_preset.take() {
+            self.visual_stage.subject.effect = effect;
+        }
+        if let Some(intensity) = self.legacy_visual_intensity.take() {
+            self.visual_stage.subject.tuning.intensity = intensity;
+        }
+        if let Some(motion) = self.legacy_visual_motion.take() {
+            self.visual_stage.subject.tuning.motion = motion;
+        }
+        if let Some(depth) = self.legacy_visual_depth.take() {
+            self.visual_stage.subject.tuning.depth = depth;
+        }
+        if let Some(glow) = self.legacy_visual_glow.take() {
+            self.visual_stage.subject.tuning.glow = glow;
+        }
+        if let Some(light) = self.legacy_atmosphere.take() {
+            self.visual_stage.ambient = light;
+        }
+        self.visual_stage = std::mem::take(&mut self.visual_stage).normalized();
         self.library_roots.sort();
         self.library_roots.dedup();
     }
@@ -459,18 +480,21 @@ mod tests {
     fn round_trips_separate_persistence_classes_atomically() {
         let (root, store) = test_store("round-trip");
         let _ = fs::remove_dir_all(&root);
-        let mut atmosphere = Atmosphere::default();
+        let mut atmosphere = AmbientLayer::default();
         assert!(atmosphere.add_source());
         atmosphere.sources[1].x = -0.35;
-        atmosphere.sources[1].palette = wavora_visuals::AtmospherePalette::Custom;
-        atmosphere.sources[1].shape = wavora_visuals::AtmosphereSourceShape::Beam;
-        atmosphere.sources[1].audio_response = wavora_visuals::AtmosphereAudioResponse::Bass;
-        atmosphere.field.kind = wavora_visuals::AtmosphereFieldKind::Watercolor;
+        atmosphere.sources[1].palette = wavora_visuals::LightPalette::Custom;
+        atmosphere.sources[1].shape = wavora_visuals::LightSourceShape::Beam;
+        atmosphere.sources[1].audio_response = wavora_visuals::LightAudioResponse::Bass;
+        atmosphere.field.kind = wavora_visuals::LightMaterialKind::Watercolor;
         let mut persistent = PersistentApp {
             config: AppConfig {
                 volume: 0.41,
                 playback_mode: PlaybackMode::Shuffle,
-                atmosphere: atmosphere.clone(),
+                visual_stage: VisualStage {
+                    ambient: atmosphere.clone(),
+                    ..VisualStage::default()
+                },
                 playlist_display: PlaylistDisplay::Covers,
                 ..AppConfig::default()
             },
@@ -488,7 +512,7 @@ mod tests {
         assert!(recovered.is_empty());
         assert!((loaded.config.volume - 0.41).abs() < f32::EPSILON);
         assert_eq!(loaded.config.playback_mode, PlaybackMode::Shuffle);
-        assert_eq!(loaded.config.atmosphere, atmosphere);
+        assert_eq!(loaded.config.visual_stage.ambient, atmosphere);
         assert_eq!(loaded.config.playlist_display, PlaylistDisplay::Covers);
         assert_eq!(
             loaded.state.last_track_uri.as_deref(),
@@ -499,6 +523,11 @@ mod tests {
             ["file:///music/favorite.flac"]
         );
         let config = fs::read_to_string(store.config_path()).expect("read config");
+        assert!(config.contains("\"visual_stage\""));
+        assert!(config.contains("\"subject\""));
+        assert!(config.contains("\"ambient\""));
+        assert!(!config.contains("\"visual_preset\""));
+        assert!(!config.contains("\"atmosphere\""));
         assert!(!config.contains("recent_uris"));
         assert!(!config.contains("favorite_uris"));
         assert!(!config.contains("last_track_uri"));
@@ -540,7 +569,11 @@ mod tests {
 
         assert!(recovered.is_empty());
         assert_eq!(loaded.config.version, CONFIG_VERSION);
-        assert_eq!(loaded.config.atmosphere, Atmosphere::default());
+        assert_eq!(
+            loaded.config.visual_stage.ambient,
+            AmbientLayer::default()
+        );
+        assert_eq!(loaded.config.visual_stage.subject.effect, 2);
         assert_eq!(loaded.config.playlist_display, PlaylistDisplay::List);
         assert_eq!(loaded.state.recent_uris, ["file:///music/recent.flac"]);
         assert_eq!(
@@ -563,7 +596,7 @@ mod tests {
   "version": 6,
   "atmosphere": {
     "enabled": true,
-    "composition_visible": true,
+    "composition_visible": false,
     "sources": [{
       "x": -0.25,
       "y": 0.6,
@@ -579,15 +612,39 @@ mod tests {
 
         config.normalize();
 
-        let source = &config.atmosphere.sources[0];
+        let source = &config.visual_stage.ambient.sources[0];
         assert_eq!(config.version, CONFIG_VERSION);
-        assert_eq!(source.shape, wavora_visuals::AtmosphereSourceShape::Circle);
+        assert!(!config.visual_stage.subject.enabled);
+        assert_eq!(source.shape, wavora_visuals::LightSourceShape::Circle);
         assert_eq!(
             source.audio_response,
-            wavora_visuals::AtmosphereAudioResponse::Energy
+            wavora_visuals::LightAudioResponse::Energy
         );
         assert!((source.aspect - 2.0).abs() < f32::EPSILON);
         assert!((source.audio_scale - 0.18).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn loads_lighting_keyed_configs_into_the_ambient_layer() {
+        let mut config: AppConfig = serde_json::from_str(
+            r#"{
+  "version": 9,
+  "visual_stage": {
+    "lighting": {
+      "enabled": false,
+      "sources": [{ "x": 0.25, "y": 0.4 }]
+    }
+  }
+}"#,
+        )
+        .expect("deserialize lighting-keyed stage");
+
+        config.normalize();
+
+        assert!(!config.visual_stage.ambient.enabled);
+        let source = &config.visual_stage.ambient.sources[0];
+        assert!((source.x - 0.25).abs() < f32::EPSILON);
+        assert!((source.y - 0.4).abs() < f32::EPSILON);
     }
 
     #[test]

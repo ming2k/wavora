@@ -22,7 +22,7 @@ use wavora_media::{
     is_supported_audio, load_sidecar_lyrics, path_to_file_uri,
 };
 use wavora_visuals::{
-    Atmosphere, AudioMetricSnapshot, PRESETS, SharedVisualState, VisualRenderer, VisualTuning,
+    AudioMetricSnapshot, SUBJECT_EFFECTS, SharedVisualState, VisualRenderer, VisualStage,
     shared_state,
 };
 
@@ -56,8 +56,8 @@ pub enum View {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum VisualInspectorTab {
     #[default]
-    Composition,
-    Atmosphere,
+    Subject,
+    Ambient,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -166,10 +166,8 @@ pub struct App {
     pub seek_ratio: f32,
     pub volume: f32,
     pub playback_mode: PlaybackMode,
-    pub preset: usize,
-    pub visual_tuning: VisualTuning,
-    pub atmosphere: Atmosphere,
-    pub selected_atmosphere_source: usize,
+    pub visual_stage: VisualStage,
+    pub selected_light_source: usize,
     pub visual_inspector_tab: VisualInspectorTab,
     pub view: View,
     pub search: TextBuf,
@@ -286,15 +284,7 @@ impl App {
         }
         let volume = config.volume;
         let playback_mode = config.playback_mode;
-        let preset = config.visual_preset;
-        let visual_tuning = VisualTuning {
-            intensity: config.visual_intensity,
-            motion: config.visual_motion,
-            depth: config.visual_depth,
-            glow: config.visual_glow,
-        }
-        .normalized();
-        let atmosphere = config.atmosphere.clone().normalized();
+        let visual_stage = config.visual_stage.clone().normalized();
         let language = config.language.resolve();
         let view = if config.library_roots.is_empty() && tracks.is_empty() {
             View::Home
@@ -310,10 +300,8 @@ impl App {
             seek_ratio: 0.0,
             volume,
             playback_mode,
-            preset,
-            visual_tuning,
-            atmosphere,
-            selected_atmosphere_source: 0,
+            visual_stage,
+            selected_light_source: 0,
             visual_inspector_tab: VisualInspectorTab::default(),
             view,
             search: TextBuf::new(256, ""),
@@ -384,10 +372,8 @@ impl App {
                 raw.display_size.y,
                 self.playback_state.is_playing(),
                 self.seek_ratio,
-                self.preset,
                 self.audio_features,
-                self.visual_tuning,
-                &self.atmosphere,
+                &self.visual_stage,
             );
             visual.needs_animation_frame()
         } else {
@@ -821,48 +807,54 @@ impl App {
         pending
     }
 
-    pub fn set_preset(&mut self, preset: usize) {
-        self.preset = preset % PRESETS.len();
+    pub fn set_subject_effect(&mut self, effect: usize) {
+        self.visual_stage.subject.effect = effect % SUBJECT_EFFECTS.len();
         self.preset_override = None;
-        self.config.visual_preset = self.preset;
-        self.mark_persistence_dirty();
-    }
-
-    pub fn apply_visual_tuning(&mut self) {
-        self.visual_tuning = self.visual_tuning.normalized();
-        self.config.visual_intensity = self.visual_tuning.intensity;
-        self.config.visual_motion = self.visual_tuning.motion;
-        self.config.visual_depth = self.visual_tuning.depth;
-        self.config.visual_glow = self.visual_tuning.glow;
-        self.mark_persistence_dirty();
-    }
-
-    pub fn apply_atmosphere(&mut self) {
-        self.atmosphere = std::mem::take(&mut self.atmosphere).normalized();
-        self.selected_atmosphere_source = self
-            .selected_atmosphere_source
-            .min(self.atmosphere.sources.len().saturating_sub(1));
-        self.config.atmosphere.clone_from(&self.atmosphere);
+        self.config.visual_stage.subject.effect = self.visual_stage.subject.effect;
         self.mark_persistence_dirty();
         request_animation_frame();
     }
 
-    pub fn add_atmosphere_source(&mut self) {
-        if self.atmosphere.add_source() {
-            self.selected_atmosphere_source = self.atmosphere.sources.len() - 1;
-            self.apply_atmosphere();
+    pub fn apply_subject_layer(&mut self) {
+        self.visual_stage.subject = self.visual_stage.subject.normalized();
+        self.config
+            .visual_stage
+            .subject
+            .clone_from(&self.visual_stage.subject);
+        self.mark_persistence_dirty();
+        request_animation_frame();
+    }
+
+    pub fn apply_ambient_layer(&mut self) {
+        self.visual_stage.ambient = std::mem::take(&mut self.visual_stage.ambient).normalized();
+        self.selected_light_source = self
+            .selected_light_source
+            .min(self.visual_stage.ambient.sources.len().saturating_sub(1));
+        self.config
+            .visual_stage
+            .ambient
+            .clone_from(&self.visual_stage.ambient);
+        self.mark_persistence_dirty();
+        request_animation_frame();
+    }
+
+    pub fn add_light_source(&mut self) {
+        if self.visual_stage.ambient.add_source() {
+            self.selected_light_source = self.visual_stage.ambient.sources.len() - 1;
+            self.apply_ambient_layer();
         }
     }
 
-    pub fn remove_selected_atmosphere_source(&mut self) {
+    pub fn remove_selected_light_source(&mut self) {
         if self
-            .atmosphere
-            .remove_source(self.selected_atmosphere_source)
+            .visual_stage
+            .ambient
+            .remove_source(self.selected_light_source)
         {
-            self.selected_atmosphere_source = self
-                .selected_atmosphere_source
-                .min(self.atmosphere.sources.len().saturating_sub(1));
-            self.apply_atmosphere();
+            self.selected_light_source = self
+                .selected_light_source
+                .min(self.visual_stage.ambient.sources.len().saturating_sub(1));
+            self.apply_ambient_layer();
         }
     }
 
@@ -1405,13 +1397,14 @@ impl App {
         self.config.volume = self.volume;
         self.config.playback_mode = self.playback_mode;
         if self.preset_override.is_none() {
-            self.config.visual_preset = self.preset;
+            self.config.visual_stage.subject.effect = self.visual_stage.subject.effect;
         }
-        self.config.visual_intensity = self.visual_tuning.intensity;
-        self.config.visual_motion = self.visual_tuning.motion;
-        self.config.visual_depth = self.visual_tuning.depth;
-        self.config.visual_glow = self.visual_tuning.glow;
-        self.config.atmosphere.clone_from(&self.atmosphere);
+        self.config.visual_stage.subject.enabled = self.visual_stage.subject.enabled;
+        self.config.visual_stage.subject.tuning = self.visual_stage.subject.tuning;
+        self.config
+            .visual_stage
+            .ambient
+            .clone_from(&self.visual_stage.ambient);
         self.user_data.normalize();
         let persistent = PersistentApp {
             config: self.config.clone(),
@@ -1486,7 +1479,7 @@ pub fn run() -> Result<(), AppError> {
     let paths = command_line_paths();
     let requested_view = command_line_view();
     let requested_preset = command_line_preset();
-    let visuals = shared_state(persistent.config.visual_preset);
+    let visuals = shared_state(&persistent.config.visual_stage);
     let paint_visuals = visuals.clone();
     let mut app = App::new(
         persistent.config,
@@ -1500,7 +1493,7 @@ pub fn run() -> Result<(), AppError> {
         app.view = view;
     }
     if let Some(preset) = requested_preset {
-        app.preset = preset;
+        app.visual_stage.subject.effect = preset;
         app.preset_override = Some(preset);
     }
     if !recovered_files.is_empty() {
@@ -1589,10 +1582,14 @@ pub fn run() -> Result<(), AppError> {
             );
         },
         Some(move |host| {
-            paint_artwork.borrow_mut().prepare(&host);
+            let artwork = {
+                let mut artwork = paint_artwork.borrow_mut();
+                artwork.prepare(&host);
+                artwork.texture()
+            };
             paint_playlist_artwork.borrow_mut().prepare(&host);
             paint_queue_artwork.borrow_mut().prepare(&host);
-            visual_renderer.paint(host, &paint_visuals);
+            visual_renderer.paint(host, &paint_visuals, artwork);
         }),
     )?;
     Ok(())
@@ -1619,7 +1616,7 @@ fn command_line_view() -> Option<View> {
 fn command_line_preset() -> Option<usize> {
     std::env::args()
         .find_map(|argument| argument.strip_prefix("--preset=")?.parse::<usize>().ok())
-        .map(|preset| preset % PRESETS.len())
+        .map(|preset| preset % SUBJECT_EFFECTS.len())
 }
 
 fn argument_to_path(argument: std::ffi::OsString) -> PathBuf {

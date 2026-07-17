@@ -144,7 +144,7 @@ mod tests {
     fn inspector_tabs_normalize_an_out_of_range_selection() {
         let mut ui = Ui::headless().expect("headless Optics UI");
         let input = Input::new((320.0, 120.0), 1.0 / 60.0);
-        let labels = ["Composition", "Atmosphere"];
+        let labels = ["Subject", "Ambient"];
 
         let selected = ui.frame(&input, |frame| {
             InspectorTabs::new("test-tabs", &labels, 8, 300.0).show(frame)

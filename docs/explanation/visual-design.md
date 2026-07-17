@@ -7,29 +7,29 @@ Electron page structure. The visual system uses depth, restrained materials,
 and audio-responsive motion to reinforce the music while keeping playback
 controls predictable.
 
-For the built-in compositions, tuning ranges, and exact rendering behavior,
+For the built-in subject effects, tuning ranges, and exact rendering behavior,
 use the [Visual Reference](../reference/visuals.md).
 
 ## Stable Stage
 
-The playback console is the stable visual anchor. Changing a composition
+The playback console is the stable visual anchor. Changing a subject effect
 alters the visual character but not the location or behavior of play, pause, track
 navigation, and visual controls. This continuity lets the stage feel dynamic
 without making routine playback harder to operate.
 
 The Visual Stage follows an editor layout rather than a long settings form. A
 minimum-width preview remains the primary surface, while a tabbed inspector
-separates composition decisions from atmosphere construction. Inspector cards
+separates subject decisions from lighting construction. Inspector cards
 group settings by responsibility, and the tab bar stays visible while its
 content scrolls. When the window cannot preserve a useful preview width, the
 inspector stacks below the preview instead of compressing both columns. The
 stacked preview uses a compact information density rather than allowing desktop
 cards to overflow a shorter stage. Inspector and popup surfaces remain opaque;
-the atmosphere is visible around the editing surfaces, never through their
+the lighting field is visible around the editing surfaces, never through their
 content.
 
-The selected atmosphere and, when visible, the preset composition render
-behind every content page. The visual page moves the same renderer into a
+The enabled subject and lighting modules render behind every content page. The
+visual page moves the same renderer into a
 bounded viewport beside a dense control rail; it does not replace the scene
 with a separate ambient interpretation. Palette, animation phase, tuning,
 audio state, transition, and geometry therefore remain continuous across
@@ -37,13 +37,14 @@ navigation. Stage geometry uses local coordinates and cannot draw outside its
 viewport. Content pages preserve readability through UI-owned translucent
 surfaces rather than a second, independently maintained background renderer.
 
-## Composable Atmosphere
+## Subject and Lighting Modules
 
-Atmosphere is a separate rendering layer beneath the selected composition.
-Changing a composition does not reset light placement, motion, falloff, or
-custom colour. A source can instead follow the composition palette when a
-coordinated result is preferred. The composition can also be hidden, leaving
-an atmosphere-only listening space.
+Subject is the attention-carrying effect; Lighting is the environment beneath
+it. The modules have independent enable state. Changing or disabling the
+subject does not reset light placement, motion, falloff, or custom color. A
+source can follow the subject palette when a coordinated result is preferred.
+Disabling the subject leaves a lighting-only listening space, while disabling
+lighting preserves a clean subject on the dark base.
 
 Sources use normalized window coordinates. The visible window occupies
 `0..=1` on each axis, but source positions may extend beyond that range. This
@@ -55,16 +56,23 @@ Source geometry and source response are also independent. Circle, oval area,
 and directional beam shapes can all use diffuse, focused, or halo falloff. A
 source may remain static or bind its scale and brightness to broad energy,
 bass, midrange, treble, or transients; this binding does not alter the selected
-composition or procedural material. Elongated sources keep the same normalized
+subject or procedural material. Elongated sources keep the same normalized
 off-window coordinate system as circles.
 
 The source count is deliberately bounded. This keeps the editor legible and
-caps full-screen gradient overdraw on integrated GPUs. Watercolour diffusion
-and water caustics are separate material fields rather than light shapes.
-Watercolour uses source geometry to place independently granulated pigment
-plumes; caustics uses a warped interference field. Both render beneath the
-immediate light sources and can follow the composition palette or use a custom
-ramp.
+caps full-screen gradient overdraw on integrated GPUs. Watercolor diffusion,
+water caustics, aurora curtains, and nebula clouds are separate material fields
+rather than light shapes. Watercolor uses source geometry to place granulated
+pigment plumes; caustics uses a warped interference field. All materials render
+beneath the immediate sources and can follow the subject palette or use a
+custom ramp.
+
+Subject effects use a registry that colocates palette and renderer. Shared
+projection helpers let Ripple Field and Particle Terrain reuse point-grid,
+depth, and submission rules while keeping distinct height functions. Cover
+Relief uses the current album artwork as one UV surface split across a grid of
+cuboid tops: the pieces reconstruct the full cover when coplanar, then remain
+attached as spectrum and transients lift individual columns.
 
 Direct manipulation belongs in a future stage-canvas interaction primitive.
 The current Lens widget surface does not provide a transparent custom drag
@@ -88,12 +96,12 @@ surface without reducing text contrast through broad white gradients.
 
 Audio features map to recognizable spatial properties. Frequency regions,
 pitch, loudness, and transients influence motion, shape, and depth in ways that
-remain consistent within a composition. Ordered particles and subtle breathing
-motion preserve structure instead of turning every detected change into visual
-noise.
+remain consistent within a subject effect. Ordered particles and subtle
+breathing motion preserve structure instead of turning every detected change
+into visual noise.
 
 The visual layer smooths feature changes over time. Attack preserves the
-impact of new energy, while release lets a composition decay naturally during
+impact of new energy, while release lets a subject decay naturally during
 a pause instead of freezing on its last frame.
 
 ## Localization and Performance

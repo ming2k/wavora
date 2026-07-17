@@ -82,11 +82,11 @@ match is unambiguous.
 ## Rendering and Interface
 
 The application publishes a lightweight visual snapshot containing audio
-features, preset state, tuning, and the logical-pixel stage viewport. The Flux
+features, subject/lighting state, tuning, artwork handle, and the logical-pixel stage viewport. The Flux
 paint callback reads only that snapshot, so it does not lock application state
 while drawing.
 
-The local viewport excludes the control rail from particle compositions and
+The local viewport excludes the control rail from subject effects and
 keeps stage coordinates independent of device scale. Table rendering follows
 the same separation: Lens virtualizes visible rows and clips the header, body,
 and individual cells, while Iris normalizes the platform scroll axis at the

@@ -16,8 +16,9 @@ Current product direction:
 - Local-first, with no dependency on online music accounts or proprietary
   music-source APIs
 - A dark, restrained music stage with a strong sense of spatial depth
-- Six visual engines with distinct compositions, driven by a 32-band
-  spectrum, pitch, loudness, low/mid/high bands, and transients
+- Eleven modular subject effects plus independent lighting materials and
+  sources, driven by a 32-band spectrum, pitch, loudness, low/mid/high bands,
+  transients, and current-track artwork
 - Separate playback, media-scanning, and rendering paths to avoid blocking UI
   frames
 - System-language detection, with settings to force English or Simplified
@@ -25,7 +26,7 @@ Current product direction:
 - A virtualized track table with a fixed header, visible scrollbar, and
   Wayland-conventional scrolling direction
 - Atomic configuration writes and startup restoration of the most recent
-  track, favorites, volume, and visual preset; corrupt configuration is backed
+  track, favorites, volume, and visual stage; corrupt configuration is backed
   up and recovered automatically
 - Durable local playlists backed by immutable track IDs; exact matching
   preserves moves and metadata edits, while guarded acoustic matching can
@@ -65,7 +66,7 @@ cargo run --release -- --lyrics
 ```
 
 Use `--visuals`, `--library`, `--playlists`, or `--lyrics` to open a specific
-view at startup. Use `--preset=0..5` to preview a visual preset without
+view at startup. Use `--preset=0..10` to preview a subject effect without
 overwriting the saved selection.
 
 A local installation defaults to `~/.local` and includes the desktop entry,
@@ -98,7 +99,8 @@ The workspace is divided by responsibility into `wavora-core` (domain model),
 `wavora-audio-analysis` (pure PCM feature extraction), `wavora-i18n` (language
 resolution and localized copy), `wavora-library` (durable identity and
 playlists), `wavora-media` (scanning, decoding, and output), `wavora-visuals`
-(presets, response envelopes, transitions, and Flux drawing), and the root
+(subject and lighting modules, response envelopes, transitions, and Flux
+drawing), and the root
 application (state, persistence, and Optics UI). See
 [System Architecture](docs/explanation/system-architecture.md),
 [Track Identity](docs/explanation/track-identity.md), and

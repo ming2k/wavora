@@ -6,13 +6,92 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::hash::Hash;
 use std::io::Cursor;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use wavora_media::load_artwork;
 
 const ARTWORK_TEXTURE_SIZE: u32 = 320;
 const GALLERY_ARTWORK_TEXTURE_SIZE: u32 = 256;
+/// Combined upload + submit budget per gallery paint; keeps one frame from
+/// monopolizing the GPU or the decode queue when a large collection opens.
 const GALLERY_LOOKUPS_PER_FRAME: usize = 2;
 const MAX_DECODE_DIMENSION: u32 = 8_192;
 const MAX_DECODE_ALLOCATION: u64 = 96 * 1024 * 1024;
+
+/// Background artwork decode worker.
+///
+/// Cover discovery plus JPEG/PNG decode plus the Lanczos3 resize cost tens
+/// of milliseconds per cover (measured ~45 ms average, >140 ms worst case on
+/// a real library) — far over the 16.7 ms frame budget, so running them in
+/// the paint callback visibly stutters any animation on screen. Caches
+/// submit jobs here and only perform the sub-millisecond GPU upload once
+/// pixels are ready.
+struct ArtworkJob {
+    id: u64,
+    uri: String,
+    size: u32,
+    cancel: Arc<AtomicBool>,
+}
+
+type DecodedArtwork = Option<(u32, u32, Vec<u8>)>;
+
+struct ArtworkWorker {
+    submit: std::sync::mpsc::Sender<ArtworkJob>,
+    completed: Arc<Mutex<HashMap<u64, DecodedArtwork>>>,
+    next_id: AtomicU64,
+}
+
+impl ArtworkWorker {
+    fn submit(&self, uri: &str, size: u32, cancel: Arc<AtomicBool>) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let _ = self.submit.send(ArtworkJob {
+            id,
+            uri: uri.to_owned(),
+            size,
+            cancel,
+        });
+        id
+    }
+
+    /// Returns the finished decode for `id` (removing it), or `None` while
+    /// the job is still queued or decoding.
+    fn take(&self, id: u64) -> Option<DecodedArtwork> {
+        self.completed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id)
+    }
+}
+
+fn artwork_worker() -> &'static ArtworkWorker {
+    static WORKER: OnceLock<ArtworkWorker> = OnceLock::new();
+    WORKER.get_or_init(|| {
+        let (submit, receive) = std::sync::mpsc::channel::<ArtworkJob>();
+        let completed = Arc::new(Mutex::new(HashMap::new()));
+        let sink = Arc::clone(&completed);
+        std::thread::Builder::new()
+            .name("wavora-artwork".to_owned())
+            .spawn(move || {
+                while let Ok(job) = receive.recv() {
+                    let decoded = load_artwork(&job.uri)
+                        .and_then(|artwork| decode_artwork(&artwork.bytes, job.size));
+                    // A cancelled job (selection changed mid-decode) drops
+                    // its pixels instead of parking them in the map forever.
+                    if !job.cancel.load(Ordering::Relaxed) {
+                        sink.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(job.id, decoded);
+                    }
+                }
+            })
+            .expect("spawn artwork worker");
+        ArtworkWorker {
+            submit,
+            completed,
+            next_id: AtomicU64::new(1),
+        }
+    })
+}
 
 /// Bridges cover discovery in the paint callback with Lens's next UI frame.
 /// A failed lookup is cached for the current URI so missing artwork never
@@ -22,6 +101,7 @@ pub struct ArtworkCache {
     loaded_uri: Option<String>,
     texture: Option<Image>,
     dirty: bool,
+    pending: Option<(u64, String, Arc<AtomicBool>)>,
 }
 
 impl Default for ArtworkCache {
@@ -31,6 +111,7 @@ impl Default for ArtworkCache {
             loaded_uri: None,
             texture: None,
             dirty: true,
+            pending: None,
         }
     }
 }
@@ -48,39 +129,62 @@ impl ArtworkCache {
             .map(|image| image.as_raw().cast())
     }
 
-    /// Resolves and uploads a changed cover while Iris exposes its GPU device.
+    /// Returns the prepared current texture without changing the selection.
+    #[must_use]
+    pub fn texture(&self) -> Option<*mut c_void> {
+        (self.loaded_uri == self.desired_uri)
+            .then_some(self.texture.as_ref())
+            .flatten()
+            .map(|image| image.as_raw().cast())
+    }
+
+    /// Picks up the finished decode and uploads it, and queues a background
+    /// decode when the selection changed. All expensive work (metadata probe,
+    /// image decode, resize) happens on the artwork worker thread.
     #[allow(unsafe_code)]
     pub fn prepare(&mut self, host: &PaintHost) {
+        let worker = artwork_worker();
+        if let Some((id, uri, cancel)) = self.pending.take() {
+            match worker.take(id) {
+                Some(decoded) => {
+                    if self.desired_uri.as_deref() == Some(uri.as_str())
+                        && let Some((width, height, pixels)) = decoded
+                    {
+                        // SAFETY: Iris owns this device and guarantees it
+                        // remains live for the entire paint callback. The
+                        // borrowed wrapper never releases it.
+                        let device = unsafe { Device::borrow_raw(host.device().cast()) };
+                        self.texture = Image::from_bytes(
+                            &device,
+                            width,
+                            height,
+                            Format::FLUX_FORMAT_RGBA8_SRGB,
+                            &pixels,
+                        )
+                        .ok();
+                        if self.texture.is_some() {
+                            request_animation_frame();
+                        }
+                    }
+                }
+                None => self.pending = Some((id, uri, cancel)),
+            }
+        }
         if !self.dirty {
             return;
         }
         self.dirty = false;
         self.texture = None;
         self.loaded_uri = self.desired_uri.clone();
+        if let Some((_, _, cancel)) = self.pending.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
         let Some(uri) = self.desired_uri.as_deref() else {
             return;
         };
-        let Some(artwork) = load_artwork(uri) else {
-            return;
-        };
-        let Some((width, height, pixels)) = decode_artwork(&artwork.bytes, ARTWORK_TEXTURE_SIZE)
-        else {
-            return;
-        };
-        // SAFETY: Iris owns this device and guarantees it remains live for the
-        // entire paint callback. The borrowed wrapper never releases it.
-        let device = unsafe { Device::borrow_raw(host.device().cast()) };
-        let Ok(texture) = Image::from_bytes(
-            &device,
-            width,
-            height,
-            Format::FLUX_FORMAT_RGBA8_SRGB,
-            &pixels,
-        ) else {
-            return;
-        };
-        self.texture = Some(texture);
-        request_animation_frame();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let id = worker.submit(uri, ARTWORK_TEXTURE_SIZE, Arc::clone(&cancel));
+        self.pending = Some((id, uri.to_owned(), cancel));
     }
 }
 
@@ -90,6 +194,7 @@ struct GalleryEntry {
     texture: Option<Image>,
     next_candidate: usize,
     prepared: bool,
+    pending: Option<(u64, usize, Arc<AtomicBool>)>,
 }
 
 /// Bounded-work texture cache for covers in lists and galleries.
@@ -118,7 +223,13 @@ where
     pub fn synchronize<'a>(&mut self, requests: impl IntoIterator<Item = (Key, &'a [String])>) {
         let requests = requests.into_iter().collect::<Vec<_>>();
         let desired = requests.iter().map(|(key, _)| *key).collect::<HashSet<_>>();
-        self.entries.retain(|key, _| desired.contains(key));
+        self.entries.retain(|key, entry| {
+            let keep = desired.contains(key);
+            if !keep && let Some((_, _, cancel)) = entry.pending.take() {
+                cancel.store(true, Ordering::Relaxed);
+            }
+            keep
+        });
         for (key, candidates) in requests {
             let entry = self.entries.entry(key).or_default();
             if entry.candidates != candidates {
@@ -126,6 +237,9 @@ where
                 entry.texture = None;
                 entry.next_candidate = 0;
                 entry.prepared = false;
+                if let Some((_, _, cancel)) = entry.pending.take() {
+                    cancel.store(true, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -142,42 +256,56 @@ where
             .map(|image| image.as_raw().cast())
     }
 
-    /// Uploads a small batch per paint callback to keep large collections
-    /// from monopolizing one frame.
+    /// Uploads finished decodes and submits new background decodes, both
+    /// bounded per paint callback so a large collection opening cannot
+    /// monopolize a frame.
     #[allow(unsafe_code)]
     pub fn prepare(&mut self, host: &PaintHost) {
         if !self.active {
             return;
         }
-        let mut lookups = 0;
+        let worker = artwork_worker();
         // SAFETY: Iris owns this device and keeps it live throughout paint.
         let device = unsafe { Device::borrow_raw(host.device().cast()) };
-        for entry in self.entries.values_mut().filter(|entry| !entry.prepared) {
+        let mut steps = 0;
+        for entry in self.entries.values_mut() {
+            if steps == GALLERY_LOOKUPS_PER_FRAME {
+                break;
+            }
+            let Some((id, candidate_index, _)) = entry.pending else {
+                continue;
+            };
+            let Some(decoded) = worker.take(id) else {
+                continue;
+            };
+            entry.pending = None;
+            entry.texture = decoded.and_then(|(width, height, pixels)| {
+                Image::from_bytes(&device, width, height, Format::FLUX_FORMAT_RGBA8_SRGB, &pixels)
+                    .ok()
+            });
+            entry.next_candidate = candidate_index + 1;
+            entry.prepared =
+                entry.texture.is_some() || entry.next_candidate == entry.candidates.len();
+            steps += 1;
+        }
+        for entry in self
+            .entries
+            .values_mut()
+            .filter(|entry| !entry.prepared && entry.pending.is_none())
+        {
+            if steps == GALLERY_LOOKUPS_PER_FRAME {
+                break;
+            }
             let Some(uri) = entry.candidates.get(entry.next_candidate) else {
                 entry.prepared = true;
                 continue;
             };
-            entry.next_candidate += 1;
-            lookups += 1;
-            entry.texture = load_artwork(uri).and_then(|artwork| {
-                let (width, height, pixels) =
-                    decode_artwork(&artwork.bytes, GALLERY_ARTWORK_TEXTURE_SIZE)?;
-                Image::from_bytes(
-                    &device,
-                    width,
-                    height,
-                    Format::FLUX_FORMAT_RGBA8_SRGB,
-                    &pixels,
-                )
-                .ok()
-            });
-            entry.prepared =
-                entry.texture.is_some() || entry.next_candidate == entry.candidates.len();
-            if lookups == GALLERY_LOOKUPS_PER_FRAME {
-                break;
-            }
+            let cancel = Arc::new(AtomicBool::new(false));
+            let id = worker.submit(uri, GALLERY_ARTWORK_TEXTURE_SIZE, Arc::clone(&cancel));
+            entry.pending = Some((id, entry.next_candidate, cancel));
+            steps += 1;
         }
-        if lookups > 0 {
+        if steps > 0 || self.entries.values().any(|entry| entry.pending.is_some()) {
             request_animation_frame();
         }
     }
@@ -203,6 +331,7 @@ fn decode_artwork(encoded: &[u8], size: u32) -> Option<(u32, u32, Vec<u8>)> {
 mod tests {
     use super::*;
     use image::{DynamicImage, ImageFormat, RgbaImage};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn decoded_artwork_is_square_and_bounded() {
@@ -218,5 +347,35 @@ mod tests {
             (ARTWORK_TEXTURE_SIZE, ARTWORK_TEXTURE_SIZE)
         );
         assert_eq!(pixels.len(), (width * height * 4) as usize);
+    }
+
+    #[test]
+    fn artwork_worker_decodes_submitted_image_in_background() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("wavora-artwork-job-{unique}.png"));
+        let mut encoded = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(48, 48, image::Rgba([9, 8, 7, 255])))
+            .write_to(&mut encoded, ImageFormat::Png)
+            .expect("encode png");
+        std::fs::write(&path, encoded.into_inner()).expect("write png fixture");
+        let uri = wavora_media::path_to_file_uri(&path);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let id = artwork_worker().submit(&uri, 64, cancel);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let decoded = loop {
+            if let Some(decoded) = artwork_worker().take(id) {
+                break decoded;
+            }
+            assert!(Instant::now() < deadline, "worker never finished the job");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let _ = std::fs::remove_file(path);
+        let (width, height, pixels) = decoded.expect("decode fixture");
+        assert_eq!((width, height), (64, 64));
+        assert_eq!(pixels.len(), 64 * 64 * 4);
+        assert_eq!(&pixels[0..4], &[9, 8, 7, 255]);
     }
 }

@@ -12,8 +12,8 @@ use wavora_ui::{
     inspector_section, inspector_slider, player_control_button, theme as product_theme,
 };
 use wavora_visuals::{
-    AtmosphereAudioResponse, AtmosphereFalloff, AtmosphereFieldKind, AtmospherePalette,
-    AtmosphereSourceShape, MAX_ATMOSPHERE_SOURCES, PRESETS,
+    LightAudioResponse, LightFalloff, LightMaterialKind, LightPalette, LightSourceShape,
+    MAX_LIGHT_SOURCES, SUBJECT_EFFECTS,
 };
 
 const ROOT_PAD: f32 = 18.0;
@@ -73,7 +73,7 @@ impl QueueLayout {
 
 #[must_use]
 pub fn theme(preset: usize) -> Theme {
-    let accent = PRESETS[preset % PRESETS.len()].accent;
+    let accent = SUBJECT_EFFECTS[preset % SUBJECT_EFFECTS.len()].accent;
     product_theme(accent)
 }
 
@@ -86,7 +86,7 @@ pub fn build(
     playlist_artwork: &[(PlaylistId, *mut c_void)],
     queue_artwork: &[(TrackId, *mut c_void)],
 ) {
-    frame.set_theme(theme(app.preset));
+    frame.set_theme(theme(app.visual_stage.subject.effect));
     let show_sidebar = width >= 760.0;
     let queue_progress = app.queue_panel_progress();
     let show_queue = queue_progress > f32::EPSILON;
@@ -123,7 +123,7 @@ pub fn build(
         + PLAYER_HEIGHT
         + GAP * root_gap_count
         + ROOT_PAD * 2.0;
-    let content_height = (height - chrome_height).max(220.0);
+    let content_height = (height - chrome_height).max(1.0);
     let content_y = ROOT_PAD
         + TOP_BAR_HEIGHT
         + GAP
@@ -193,7 +193,7 @@ pub fn build(
                 },
                 |frame| {
                     if show_sidebar {
-                        sidebar(app, frame, language);
+                        sidebar(app, frame, content_height, language);
                         frame.spacer(GAP);
                     }
                     main_content(
@@ -364,13 +364,13 @@ fn transient_toast(
     let toast_width = measured_width.max(160.0).min(max_width);
     let opacity = toast.opacity.clamp(0.0, 1.0);
     let alpha = metric_alpha(opacity * 255.0);
-    let accent = PRESETS[app.preset % PRESETS.len()].accent;
+    let accent = SUBJECT_EFFECTS[app.visual_stage.subject.effect % SUBJECT_EFFECTS.len()].accent;
     let tone = if toast.is_error {
         [255, 96, 116]
     } else {
         accent
     };
-    let base = theme(app.preset);
+    let base = theme(app.visual_stage.subject.effect);
     let toast_theme = base.with_fg(base.fg().with_alpha(alpha));
     let y = ROOT_PAD
         + TOP_BAR_HEIGHT
@@ -435,11 +435,12 @@ fn transient_toast(
     frame.set_theme(base);
 }
 
-fn sidebar(app: &mut App, frame: &mut Frame, language: Language) {
+fn sidebar(app: &mut App, frame: &mut Frame, height: f32, language: Language) {
     frame.column_ex(
         &LayoutOpts {
             min_width: SIDEBAR_MIN_WIDTH,
             max_width: SIDEBAR_MAX_WIDTH,
+            height,
             gap: 7.0,
             pad: SIDEBAR_PAD,
             cross: Align::Stretch,
@@ -448,55 +449,68 @@ fn sidebar(app: &mut App, frame: &mut Frame, language: Language) {
             ..LayoutOpts::default()
         },
         |frame| {
-            frame.label_sized(text(language, Key::YourSpace), 9.5);
-            nav_item(app, frame, Icon::Home, text(language, Key::Now), View::Home);
-            nav_item(
-                app,
-                frame,
-                Icon::Database,
-                text(language, Key::Library),
-                View::Library,
-            );
-            nav_item(
-                app,
-                frame,
-                Icon::Star,
-                text(language, Key::Favorites),
-                View::Favorites,
-            );
-            nav_item(
-                app,
-                frame,
-                Icon::BookOpen,
-                text(language, Key::Playlists),
-                View::Playlists,
-            );
-            nav_item(
-                app,
-                frame,
-                Icon::Activity,
-                text(language, Key::VisualStage),
-                View::Visuals,
-            );
-            frame.spacer(10.0);
-            frame.separator();
-            frame.spacer(8.0);
-            frame.label_sized(text(language, Key::Collection), 9.5);
-            frame.label(&format!(
-                "{} {}",
-                app.tracks.len(),
-                text(language, Key::LocalTracks)
-            ));
-            frame.label(&format!(
-                "{} {}",
-                app.favorite_count(),
-                text(language, Key::FavoriteTracks)
-            ));
-            frame.flex(1.0);
-            frame.spacer(0.0);
-            if app.scanning {
-                frame.label_sized(text(language, Key::Scanning), 10.0);
-            }
+            /* The nav outgrows short windows; scroll it instead of letting
+             * it spill into the player bar. */
+            frame.size_next(0.0, (height - SIDEBAR_PAD * 2.0).max(1.0));
+            frame.scroll("sidebar-nav", |frame| {
+                frame.column_ex(
+                    &LayoutOpts {
+                        gap: 7.0,
+                        cross: Align::Stretch,
+                        ..LayoutOpts::default()
+                    },
+                    |frame| {
+                        frame.label_sized(text(language, Key::YourSpace), 9.5);
+                        nav_item(app, frame, Icon::Home, text(language, Key::Now), View::Home);
+                        nav_item(
+                            app,
+                            frame,
+                            Icon::Database,
+                            text(language, Key::Library),
+                            View::Library,
+                        );
+                        nav_item(
+                            app,
+                            frame,
+                            Icon::Star,
+                            text(language, Key::Favorites),
+                            View::Favorites,
+                        );
+                        nav_item(
+                            app,
+                            frame,
+                            Icon::BookOpen,
+                            text(language, Key::Playlists),
+                            View::Playlists,
+                        );
+                        nav_item(
+                            app,
+                            frame,
+                            Icon::Activity,
+                            text(language, Key::VisualStage),
+                            View::Visuals,
+                        );
+                        frame.spacer(10.0);
+                        frame.separator();
+                        frame.spacer(8.0);
+                        frame.label_sized(text(language, Key::Collection), 9.5);
+                        frame.label(&format!(
+                            "{} {}",
+                            app.tracks.len(),
+                            text(language, Key::LocalTracks)
+                        ));
+                        frame.label(&format!(
+                            "{} {}",
+                            app.favorite_count(),
+                            text(language, Key::FavoriteTracks)
+                        ));
+                        if app.scanning {
+                            frame.spacer(10.0);
+                            frame.label_sized(text(language, Key::Scanning), 10.0);
+                        }
+                    },
+                );
+            });
         },
     );
 }
@@ -554,6 +568,7 @@ fn main_content(
     frame.column_ex(
         &LayoutOpts {
             flex: 1.0,
+            height,
             gap: 12.0,
             pad: 22.0,
             cross: Align::Stretch,
@@ -653,8 +668,8 @@ fn home(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
             if width >= 720.0 {
                 InsightCard::new(
                     text(language, Key::VisualCard),
-                    visual_preset_text(language, app.preset).name,
-                    visual_preset_text(language, app.preset).subtitle,
+                    visual_preset_text(language, app.visual_stage.subject.effect).name,
+                    visual_preset_text(language, app.visual_stage.subject.effect).subtitle,
                 )
                 .show(frame);
                 InsightCard::new(
@@ -740,7 +755,7 @@ fn library(
         align: Align::End,
     });
     let table_width = (width - 44.0).max(280.0);
-    let table_height = (height - 116.0).max(160.0);
+    let table_height = (height - 116.0).max(24.0);
     let fixed_width = columns
         .iter()
         .filter(|column| column.width > 0.0)
@@ -897,7 +912,7 @@ fn playlist_collection(
         return;
     }
 
-    let collection_height = (height - 118.0).max(160.0);
+    let collection_height = (height - 118.0).max(24.0);
     match app.playlist_display() {
         PlaylistDisplay::List => {
             playlist_list_collection(app, frame, width, collection_height, &available_playlists);
@@ -1030,7 +1045,7 @@ fn playlist_detail(app: &mut App, frame: &mut Frame, width: f32, height: f32, la
         },
     ];
     let table_width = (width - 44.0).max(280.0);
-    let table_height = (height - 106.0).max(140.0);
+    let table_height = (height - 106.0).max(24.0);
     let tracks = app.selected_playlist_tracks();
     frame.size_next(table_width, table_height);
     let result = frame.table(
@@ -1223,7 +1238,8 @@ fn lyrics(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: L
         frame.label_sized(&source, 9.0);
     }
     for cue in active.iter().filter_map(|index| document.cues.get(*index)) {
-        let accent = PRESETS[app.preset % PRESETS.len()].accent;
+        let accent =
+            SUBJECT_EFFECTS[app.visual_stage.subject.effect % SUBJECT_EFFECTS.len()].accent;
         let current_height = lyric_cue_height(cue, true);
         frame.size_next(0.0, current_height);
         frame.column_ex(
@@ -1253,7 +1269,8 @@ fn lyrics(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: L
     frame.scroll("lyrics-scroll", |frame| {
         for (index, cue) in document.cues.iter().enumerate() {
             let is_active = active.contains(&index);
-            let accent = PRESETS[app.preset % PRESETS.len()].accent;
+            let accent =
+                SUBJECT_EFFECTS[app.visual_stage.subject.effect % SUBJECT_EFFECTS.len()].accent;
             let line_height = lyric_cue_height(cue, false);
             frame.size_next(0.0, line_height);
             frame.column_ex(
@@ -1349,7 +1366,7 @@ fn uses_compact_visual_stage(height: f32) -> bool {
 }
 
 fn visual_stage(app: &App, frame: &mut Frame, width: f32, height: f32, language: Language) {
-    let copy = visual_preset_text(language, app.preset);
+    let copy = visual_preset_text(language, app.visual_stage.subject.effect);
     let features = app.live_audio_features();
     let metric_motion = app.audio_metric_snapshot();
     let is_live = app.playback_state.is_playing();
@@ -1368,7 +1385,8 @@ fn visual_stage(app: &App, frame: &mut Frame, width: f32, height: f32, language:
             ..LayoutOpts::default()
         },
         |frame| {
-            let accent = PRESETS[app.preset % PRESETS.len()].accent;
+            let accent =
+                SUBJECT_EFFECTS[app.visual_stage.subject.effect % SUBJECT_EFFECTS.len()].accent;
             frame.row_ex(
                 &LayoutOpts {
                     gap: 8.0,
@@ -1457,7 +1475,7 @@ fn visual_stage(app: &App, frame: &mut Frame, width: f32, height: f32, language:
                     frame,
                     features,
                     metric_motion,
-                    app.preset,
+                    app.visual_stage.subject.effect,
                     (width - 36.0).max(1.0),
                     language,
                 );
@@ -1563,7 +1581,7 @@ fn visual_metrics(
 }
 
 fn metric_palette(preset: usize) -> [[u8; 3]; 4] {
-    let preset = PRESETS[preset % PRESETS.len()];
+    let preset = SUBJECT_EFFECTS[preset % SUBJECT_EFFECTS.len()];
     [
         preset.accent,
         mix_rgb(preset.accent, preset.secondary, 36),
@@ -1609,32 +1627,29 @@ fn visual_controls(app: &mut App, frame: &mut Frame, width: f32, language: Langu
                 9.0,
             );
             let active_tab = match app.visual_inspector_tab {
-                VisualInspectorTab::Composition => 0,
-                VisualInspectorTab::Atmosphere => 1,
+                VisualInspectorTab::Subject => 0,
+                VisualInspectorTab::Ambient => 1,
             };
             let tab_rail_width = (width - 28.0).max(1.0);
-            let labels = [
-                text(language, Key::Composition),
-                text(language, Key::Atmosphere),
-            ];
+            let labels = [text(language, Key::Subject), text(language, Key::Ambient)];
             let active_tab =
                 InspectorTabs::new("visual-inspector-tabs", &labels, active_tab, tab_rail_width)
                     .show(frame);
             app.visual_inspector_tab = if active_tab == 1 {
-                VisualInspectorTab::Atmosphere
+                VisualInspectorTab::Ambient
             } else {
-                VisualInspectorTab::Composition
+                VisualInspectorTab::Subject
             };
             frame.flex(1.0);
             match app.visual_inspector_tab {
-                VisualInspectorTab::Composition => {
-                    frame.scroll("visual-composition-scroll", |frame| {
-                        composition_controls(app, frame, width, language);
+                VisualInspectorTab::Subject => {
+                    frame.scroll("visual-subject-scroll", |frame| {
+                        subject_controls(app, frame, width, language);
                     });
                 }
-                VisualInspectorTab::Atmosphere => {
-                    frame.scroll("visual-atmosphere-scroll", |frame| {
-                        atmosphere_controls(app, frame, width, language);
+                VisualInspectorTab::Ambient => {
+                    frame.scroll("visual-ambient-scroll", |frame| {
+                        ambient_controls(app, frame, width, language);
                     });
                 }
             }
@@ -1642,82 +1657,84 @@ fn visual_controls(app: &mut App, frame: &mut Frame, width: f32, language: Langu
     );
 }
 
-fn composition_controls(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
-    inspector_section(frame, text(language, Key::VisualPresets), |frame| {
-        let preset_names = (0..PRESETS.len())
+fn subject_controls(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
+    let changed = inspector_section(frame, text(language, Key::SubjectEffects), |frame| {
+        let changed = frame.checkbox(
+            text(language, Key::SubjectEnabled),
+            &mut app.visual_stage.subject.enabled,
+        );
+        let preset_names = (0..SUBJECT_EFFECTS.len())
             .map(|index| visual_preset_text(language, index).name)
             .collect::<Vec<_>>();
-        let mut selected = i32::try_from(app.preset).unwrap_or_default();
+        let mut selected = i32::try_from(app.visual_stage.subject.effect).unwrap_or_default();
         if frame.dropdown(
-            text(language, Key::Composition),
+            text(language, Key::SubjectEffect),
             &mut selected,
             &preset_names,
         ) {
-            app.set_preset(usize::try_from(selected).unwrap_or_default());
+            app.set_subject_effect(usize::try_from(selected).unwrap_or_default());
         }
-        let copy = visual_preset_text(language, app.preset);
+        let copy = visual_preset_text(language, app.visual_stage.subject.effect);
         frame.label_wrapped_sized(copy.subtitle, 9.5, (width - 52.0).max(120.0));
+        changed
     });
+    if changed {
+        app.apply_subject_layer();
+    }
     frame.spacer(10.0);
-    inspector_section(frame, text(language, Key::ResponseTuning), |frame| {
-        let copy = visual_preset_text(language, app.preset);
+    inspector_section(frame, text(language, Key::SubjectResponse), |frame| {
+        let copy = visual_preset_text(language, app.visual_stage.subject.effect);
         frame.label_wrapped_sized(copy.response, 8.5, (width - 52.0).max(120.0));
         let mut changed = false;
         changed |= inspector_slider(
             frame,
             text(language, Key::Intensity),
-            "##composition-intensity",
-            &mut app.visual_tuning.intensity,
+            "##subject-intensity",
+            &mut app.visual_stage.subject.tuning.intensity,
             0.45,
             1.75,
         );
         changed |= inspector_slider(
             frame,
             text(language, Key::Motion),
-            "##composition-motion",
-            &mut app.visual_tuning.motion,
+            "##subject-motion",
+            &mut app.visual_stage.subject.tuning.motion,
             0.35,
             1.65,
         );
         changed |= inspector_slider(
             frame,
             text(language, Key::Depth),
-            "##composition-depth",
-            &mut app.visual_tuning.depth,
+            "##subject-depth",
+            &mut app.visual_stage.subject.tuning.depth,
             0.50,
             1.50,
         );
         changed |= inspector_slider(
             frame,
             text(language, Key::Glow),
-            "##composition-glow",
-            &mut app.visual_tuning.glow,
+            "##subject-glow",
+            &mut app.visual_stage.subject.tuning.glow,
             0.25,
             1.50,
         );
         if changed {
-            app.apply_visual_tuning();
+            app.apply_subject_layer();
         }
     });
     frame.spacer(10.0);
     inspector_note(frame, text(language, Key::VisualFootnote), width);
 }
 
-fn atmosphere_controls(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
-    let layer_changed = inspector_section(frame, text(language, Key::SceneLayers), |frame| {
-        let mut changed = false;
-        changed |= frame.checkbox(
-            text(language, Key::AtmosphereEnabled),
-            &mut app.atmosphere.enabled,
-        );
-        changed |= frame.checkbox(
-            text(language, Key::CompositionVisible),
-            &mut app.atmosphere.composition_visible,
-        );
-        changed
+fn ambient_controls(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
+    let layer_changed = inspector_section(frame, text(language, Key::AmbientLayer), |frame| {
+        frame.checkbox(
+            text(language, Key::AmbientEnabled),
+            &mut app.visual_stage.ambient.enabled,
+        )
     });
     if layer_changed {
-        app.apply_atmosphere();
+        app.apply_ambient_layer();
     }
 
     frame.spacer(10.0);
@@ -1731,17 +1748,19 @@ fn atmosphere_controls(app: &mut App, frame: &mut Frame, width: f32, language: L
     });
 
     frame.spacer(10.0);
-    inspector_note(frame, text(language, Key::AtmosphereHint), width);
+    inspector_note(frame, text(language, Key::AmbientHint), width);
 }
 
 fn material_controls(app: &mut App, frame: &mut Frame, language: Language) {
     let changed = {
-        let field = &mut app.atmosphere.field;
+        let field = &mut app.visual_stage.ambient.field;
         let mut changed = false;
         let mut kind = match field.kind {
-            AtmosphereFieldKind::None => 0,
-            AtmosphereFieldKind::Watercolor => 1,
-            AtmosphereFieldKind::Caustics => 2,
+            LightMaterialKind::None => 0,
+            LightMaterialKind::Watercolor => 1,
+            LightMaterialKind::Caustics => 2,
+            LightMaterialKind::Aurora => 3,
+            LightMaterialKind::Nebula => 4,
         };
         if frame.dropdown(
             text(language, Key::MaterialField),
@@ -1750,16 +1769,20 @@ fn material_controls(app: &mut App, frame: &mut Frame, language: Language) {
                 text(language, Key::NoMaterial),
                 text(language, Key::Watercolor),
                 text(language, Key::Caustics),
+                text(language, Key::Aurora),
+                text(language, Key::Nebula),
             ],
         ) {
             field.kind = match kind {
-                1 => AtmosphereFieldKind::Watercolor,
-                2 => AtmosphereFieldKind::Caustics,
-                _ => AtmosphereFieldKind::None,
+                1 => LightMaterialKind::Watercolor,
+                2 => LightMaterialKind::Caustics,
+                3 => LightMaterialKind::Aurora,
+                4 => LightMaterialKind::Nebula,
+                _ => LightMaterialKind::None,
             };
             changed = true;
         }
-        if field.kind != AtmosphereFieldKind::None {
+        if field.kind != LightMaterialKind::None {
             changed |= inspector_slider(
                 frame,
                 text(language, Key::Strength),
@@ -1789,25 +1812,25 @@ fn material_controls(app: &mut App, frame: &mut Frame, language: Language) {
                 changed = true;
             }
             let mut palette = match field.palette {
-                AtmospherePalette::Preset => 0,
-                AtmospherePalette::Custom => 1,
+                LightPalette::Preset => 0,
+                LightPalette::Custom => 1,
             };
             if frame.dropdown(
                 text(language, Key::Palette),
                 &mut palette,
                 &[
-                    text(language, Key::FollowPreset),
+                    text(language, Key::FollowSubject),
                     text(language, Key::CustomColor),
                 ],
             ) {
                 field.palette = if palette == 0 {
-                    AtmospherePalette::Preset
+                    LightPalette::Preset
                 } else {
-                    AtmospherePalette::Custom
+                    LightPalette::Custom
                 };
                 changed = true;
             }
-            if field.palette == AtmospherePalette::Custom {
+            if field.palette == LightPalette::Custom {
                 changed |= inspector_slider(
                     frame,
                     text(language, Key::Hue),
@@ -1829,25 +1852,25 @@ fn material_controls(app: &mut App, frame: &mut Frame, language: Language) {
         changed
     };
     if changed {
-        app.apply_atmosphere();
+        app.apply_ambient_layer();
     }
 }
 
 fn light_source_controls(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
-    if !app.atmosphere.sources.is_empty() {
-        let source_names = (0..app.atmosphere.sources.len())
+    if !app.visual_stage.ambient.sources.is_empty() {
+        let source_names = (0..app.visual_stage.ambient.sources.len())
             .map(|index| format!("{} {}", text(language, Key::LightSource), index + 1))
             .collect::<Vec<_>>();
         let source_labels = source_names.iter().map(String::as_str).collect::<Vec<_>>();
-        let mut selected = i32::try_from(app.selected_atmosphere_source).unwrap_or_default();
+        let mut selected = i32::try_from(app.selected_light_source).unwrap_or_default();
         if frame.dropdown(
             text(language, Key::LightSource),
             &mut selected,
             &source_labels,
         ) {
-            app.selected_atmosphere_source = usize::try_from(selected)
+            app.selected_light_source = usize::try_from(selected)
                 .unwrap_or_default()
-                .min(app.atmosphere.sources.len() - 1);
+                .min(app.visual_stage.ambient.sources.len() - 1);
         }
     }
 
@@ -1860,24 +1883,24 @@ fn light_source_controls(app: &mut App, frame: &mut Frame, width: f32, language:
             ..LayoutOpts::default()
         },
         |frame| {
-            if app.atmosphere.sources.len() < MAX_ATMOSPHERE_SOURCES {
+            if app.visual_stage.ambient.sources.len() < MAX_LIGHT_SOURCES {
                 frame.flex(1.0);
                 add_source = frame.button(text(language, Key::AddLight));
             }
-            if !app.atmosphere.sources.is_empty() {
+            if !app.visual_stage.ambient.sources.is_empty() {
                 frame.flex(1.0);
                 remove_source = frame.button(text(language, Key::RemoveLight));
             }
         },
     );
     if add_source {
-        app.add_atmosphere_source();
+        app.add_light_source();
     } else if remove_source {
-        app.remove_selected_atmosphere_source();
+        app.remove_selected_light_source();
     }
-    if app.atmosphere.sources.is_empty() {
+    if app.visual_stage.ambient.sources.is_empty() {
         frame.label_wrapped_sized(
-            text(language, Key::AtmosphereHint),
+            text(language, Key::AmbientHint),
             8.5,
             (width - 52.0).max(120.0),
         );
@@ -1885,17 +1908,17 @@ fn light_source_controls(app: &mut App, frame: &mut Frame, width: f32, language:
     }
 
     let index = app
-        .selected_atmosphere_source
-        .min(app.atmosphere.sources.len() - 1);
+        .selected_light_source
+        .min(app.visual_stage.ambient.sources.len() - 1);
     let changed = {
-        let source = &mut app.atmosphere.sources[index];
+        let source = &mut app.visual_stage.ambient.sources[index];
         let mut changed = false;
 
         inspector_group(frame, text(language, Key::Placement));
         let mut shape = match source.shape {
-            AtmosphereSourceShape::Circle => 0,
-            AtmosphereSourceShape::Oval => 1,
-            AtmosphereSourceShape::Beam => 2,
+            LightSourceShape::Circle => 0,
+            LightSourceShape::Oval => 1,
+            LightSourceShape::Beam => 2,
         };
         if frame.dropdown(
             text(language, Key::SourceShape),
@@ -1907,9 +1930,9 @@ fn light_source_controls(app: &mut App, frame: &mut Frame, width: f32, language:
             ],
         ) {
             source.shape = match shape {
-                1 => AtmosphereSourceShape::Oval,
-                2 => AtmosphereSourceShape::Beam,
-                _ => AtmosphereSourceShape::Circle,
+                1 => LightSourceShape::Oval,
+                2 => LightSourceShape::Beam,
+                _ => LightSourceShape::Circle,
             };
             changed = true;
         }
@@ -1937,7 +1960,7 @@ fn light_source_controls(app: &mut App, frame: &mut Frame, width: f32, language:
             0.05,
             2.0,
         );
-        if source.shape != AtmosphereSourceShape::Circle {
+        if source.shape != LightSourceShape::Circle {
             changed |= inspector_slider(
                 frame,
                 text(language, Key::AspectRatio),
@@ -1958,28 +1981,28 @@ fn light_source_controls(app: &mut App, frame: &mut Frame, width: f32, language:
 
         inspector_group(frame, text(language, Key::Appearance));
         let mut palette = match source.palette {
-            AtmospherePalette::Preset => 0,
-            AtmospherePalette::Custom => 1,
+            LightPalette::Preset => 0,
+            LightPalette::Custom => 1,
         };
         if frame.dropdown(
             text(language, Key::Palette),
             &mut palette,
             &[
-                text(language, Key::FollowPreset),
+                text(language, Key::FollowSubject),
                 text(language, Key::CustomColor),
             ],
         ) {
             source.palette = if palette == 0 {
-                AtmospherePalette::Preset
+                LightPalette::Preset
             } else {
-                AtmospherePalette::Custom
+                LightPalette::Custom
             };
             changed = true;
         }
         let mut falloff = match source.falloff {
-            AtmosphereFalloff::Diffuse => 0,
-            AtmosphereFalloff::Focused => 1,
-            AtmosphereFalloff::Halo => 2,
+            LightFalloff::Diffuse => 0,
+            LightFalloff::Focused => 1,
+            LightFalloff::Halo => 2,
         };
         if frame.dropdown(
             text(language, Key::Falloff),
@@ -1991,9 +2014,9 @@ fn light_source_controls(app: &mut App, frame: &mut Frame, width: f32, language:
             ],
         ) {
             source.falloff = match falloff {
-                1 => AtmosphereFalloff::Focused,
-                2 => AtmosphereFalloff::Halo,
-                _ => AtmosphereFalloff::Diffuse,
+                1 => LightFalloff::Focused,
+                2 => LightFalloff::Halo,
+                _ => LightFalloff::Diffuse,
             };
             changed = true;
         }
@@ -2005,7 +2028,7 @@ fn light_source_controls(app: &mut App, frame: &mut Frame, width: f32, language:
             0.0,
             2.0,
         );
-        if source.palette == AtmospherePalette::Custom {
+        if source.palette == LightPalette::Custom {
             changed |= inspector_slider(
                 frame,
                 text(language, Key::Hue),
@@ -2034,12 +2057,12 @@ fn light_source_controls(app: &mut App, frame: &mut Frame, width: f32, language:
             0.18,
         );
         let mut audio_response = match source.audio_response {
-            AtmosphereAudioResponse::None => 0,
-            AtmosphereAudioResponse::Energy => 1,
-            AtmosphereAudioResponse::Bass => 2,
-            AtmosphereAudioResponse::Mid => 3,
-            AtmosphereAudioResponse::Treble => 4,
-            AtmosphereAudioResponse::Onset => 5,
+            LightAudioResponse::None => 0,
+            LightAudioResponse::Energy => 1,
+            LightAudioResponse::Bass => 2,
+            LightAudioResponse::Mid => 3,
+            LightAudioResponse::Treble => 4,
+            LightAudioResponse::Onset => 5,
         };
         if frame.dropdown(
             text(language, Key::AudioResponse),
@@ -2054,16 +2077,16 @@ fn light_source_controls(app: &mut App, frame: &mut Frame, width: f32, language:
             ],
         ) {
             source.audio_response = match audio_response {
-                1 => AtmosphereAudioResponse::Energy,
-                2 => AtmosphereAudioResponse::Bass,
-                3 => AtmosphereAudioResponse::Mid,
-                4 => AtmosphereAudioResponse::Treble,
-                5 => AtmosphereAudioResponse::Onset,
-                _ => AtmosphereAudioResponse::None,
+                1 => LightAudioResponse::Energy,
+                2 => LightAudioResponse::Bass,
+                3 => LightAudioResponse::Mid,
+                4 => LightAudioResponse::Treble,
+                5 => LightAudioResponse::Onset,
+                _ => LightAudioResponse::None,
             };
             changed = true;
         }
-        if source.audio_response != AtmosphereAudioResponse::None {
+        if source.audio_response != LightAudioResponse::None {
             changed |= inspector_slider(
                 frame,
                 text(language, Key::ScaleResponse),
@@ -2084,7 +2107,7 @@ fn light_source_controls(app: &mut App, frame: &mut Frame, width: f32, language:
         changed
     };
     if changed {
-        app.apply_atmosphere();
+        app.apply_ambient_layer();
     }
 }
 
@@ -2256,7 +2279,7 @@ fn queue_panel(
                 frame.separator();
             }
             let header_height = if detailed { 70.0 } else { panel_pad * 2.0 };
-            frame.size_next(0.0, (height - header_height).max(150.0));
+            frame.size_next(0.0, (height - header_height).max(24.0));
             frame.scroll("queue-scroll", |frame| {
                 if app.tracks.is_empty() && detailed {
                     frame.label_sized(text(language, Key::EmptyQueue), 11.0);
@@ -2274,7 +2297,7 @@ fn queue_panel(
                     let active = app.playback_queue_position() == Some(queue_position);
                     let show_details = app.queue_hover_details_visible(queue_position);
                     let response = queue_item(
-                        app.preset,
+                        app.visual_stage.subject.effect,
                         frame,
                         QueueItem {
                             position: queue_position,
@@ -2309,7 +2332,7 @@ fn queue_item(
     layout: QueueLayout,
     show_details: bool,
 ) -> Response {
-    let accent = PRESETS[preset % PRESETS.len()].accent;
+    let accent = SUBJECT_EFFECTS[preset % SUBJECT_EFFECTS.len()].accent;
     let base = theme(preset);
     let detailed = layout == QueueLayout::Detailed;
     let row_pad = if detailed { 8.0 } else { 6.0 };
@@ -2469,7 +2492,7 @@ fn queue_item_hover_card(
             gap: 5.0,
             pad: 10.0,
             cross: Align::Stretch,
-            bg: Color::rgba(30, 32, 44, 250),
+            bg: Color::rgba(30, 32, 44, 255),
             border: Color::rgba(255, 255, 255, 18),
             border_width: 1.0,
             radius: 12.0,
@@ -2588,10 +2611,11 @@ fn now_playing_panel(
                     }
                 },
             );
-            if show_favorite && let Some((_, _, favorite)) = current {
-                if favorite_toggle(frame, favorite) {
-                    app.toggle_current_favorite();
-                }
+            if show_favorite
+                && let Some((_, _, favorite)) = current
+                && favorite_toggle(frame, favorite)
+            {
+                app.toggle_current_favorite();
             }
         },
     );
@@ -2611,7 +2635,7 @@ fn album_art(app: &App, frame: &mut Frame, artwork: Option<*mut c_void>, size: f
         unsafe { frame.image(artwork.cast(), size, size) };
         return;
     }
-    let accent = PRESETS[app.preset % PRESETS.len()].accent;
+    let accent = SUBJECT_EFFECTS[app.visual_stage.subject.effect % SUBJECT_EFFECTS.len()].accent;
     frame.column_ex(
         &LayoutOpts {
             width: size,
@@ -2690,8 +2714,8 @@ fn volume_control(app: &mut App, frame: &mut Frame, language: Language) {
         w: OVERLAY_WIDTH,
         h: trigger.rect.h,
     };
-    let accent = PRESETS[app.preset % PRESETS.len()].accent;
-    let base = theme(app.preset);
+    let accent = SUBJECT_EFFECTS[app.visual_stage.subject.effect % SUBJECT_EFFECTS.len()].accent;
+    let base = theme(app.visual_stage.subject.effect);
     let volume_theme = base
         .with_slider_track_color(Color::rgba(255, 255, 255, 46))
         .with_slider_fill_color(Color::rgba(accent[0], accent[1], accent[2], 255))
@@ -2706,7 +2730,7 @@ fn volume_control(app: &mut App, frame: &mut Frame, language: Language) {
             gap: 3.0,
             pad: 8.0,
             cross: Align::Center,
-            bg: Color::rgba(30, 32, 44, 250),
+            bg: Color::rgba(30, 32, 44, 255),
             border: Color::rgba(255, 255, 255, 18),
             border_width: 1.0,
             radius: 19.0,
@@ -2742,8 +2766,8 @@ fn volume_control(app: &mut App, frame: &mut Frame, language: Language) {
 }
 
 fn lyrics_button(app: &App, frame: &mut Frame) -> bool {
-    let base = theme(app.preset);
-    let accent = PRESETS[app.preset % PRESETS.len()].accent;
+    let base = theme(app.visual_stage.subject.effect);
+    let accent = SUBJECT_EFFECTS[app.visual_stage.subject.effect % SUBJECT_EFFECTS.len()].accent;
     let active = app.view == View::Lyrics;
     let tile = base
         .with_font_size(18.0)
@@ -2841,7 +2865,7 @@ fn playback_timeline(app: &mut App, frame: &mut Frame, width: f32) {
             timeline_time(frame, &format_duration(app.position_ms), true);
             let timeline_width = (width - TIMELINE_TIME_WIDTH * 2.0 - TIMELINE_GAP * 2.0).max(1.0);
             frame.size_next(timeline_width, 18.0);
-            let base = theme(app.preset);
+            let base = theme(app.visual_stage.subject.effect);
             frame.set_theme(
                 base.with_slider_track_thickness(TIMELINE_TRACK_THICKNESS)
                     .with_slider_knob_size(TIMELINE_KNOB_SIZE),
@@ -2894,8 +2918,8 @@ fn playback_mode_toast(app: &App, frame: &mut Frame, width: f32, height: f32, la
     let toast_width = 164.0;
     let opacity = toast.opacity.clamp(0.0, 1.0);
     let alpha = metric_alpha(opacity * 255.0);
-    let accent = PRESETS[app.preset % PRESETS.len()].accent;
-    let base = theme(app.preset);
+    let accent = SUBJECT_EFFECTS[app.visual_stage.subject.effect % SUBJECT_EFFECTS.len()].accent;
+    let base = theme(app.visual_stage.subject.effect);
     frame.set_theme(base.with_fg(base.fg().with_alpha(alpha)));
     frame.layer(
         "playback-mode-toast",
@@ -3081,7 +3105,7 @@ mod tests {
 
     #[test]
     fn visual_theme_uses_each_preset_palette() {
-        for (index, preset) in PRESETS.iter().enumerate() {
+        for (index, preset) in SUBJECT_EFFECTS.iter().enumerate() {
             let themed = theme(index);
             assert_eq!(
                 themed.accent(),

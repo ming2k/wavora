@@ -1,7 +1,7 @@
 //! Audio-reactive visual engines rendered with Flux.
 //!
-//! Presets share a feature contract and transition model, but each preset has
-//! its own composition. Adding an effect does not require touching playback,
+//! Subject effects share a feature contract and transition model, but each has
+//! its own visual model. Adding an effect does not require touching playback,
 //! application state, or the UI toolkit.
 
 use flux::{Canvas, Device, Format, GradientStop, Image, rgba};
@@ -11,11 +11,11 @@ use std::ffi::c_void;
 use std::sync::{Arc, RwLock};
 use wavora_audio_analysis::{AudioFeatures, SPECTRUM_BANDS};
 
-/// Maximum number of independently positioned atmosphere sources.
+/// Maximum number of independently positioned light sources.
 ///
 /// The bound keeps serialized scenes understandable and caps full-screen
 /// overdraw on integrated GPUs while still allowing useful colour mixing.
-pub const MAX_ATMOSPHERE_SOURCES: usize = 4;
+pub const MAX_LIGHT_SOURCES: usize = 4;
 
 /// Rendering strategy used by a visual preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,53 +26,110 @@ pub enum VisualKind {
     SpectralVoid,
     VinylHalo,
     StarRiver,
+    PrismRibbons,
+    LuminousBloom,
+    RippleField,
+    ParticleTerrain,
+    CoverRelief,
 }
 
-/// Metadata and palette for one selectable visual engine.
+type SubjectRenderer = fn(&Canvas, &VisualState, VisualPreset);
+
+/// Metadata, palette, and renderer for one selectable subject effect.
+///
+/// Keeping the renderer in the registry makes subject effects self-contained:
+/// adding one does not require a second dispatch table in the stage painter.
 #[derive(Debug, Clone, Copy)]
 pub struct VisualPreset {
     pub kind: VisualKind,
     pub accent: [u8; 3],
     pub secondary: [u8; 3],
+    renderer: SubjectRenderer,
 }
 
-/// Built-in effects. Their compositions intentionally differ; these are not
+impl VisualPreset {
+    fn draw(self, canvas: &Canvas, state: &VisualState) {
+        (self.renderer)(canvas, state, self);
+    }
+}
+
+/// Built-in effects. Their visual models intentionally differ; these are not
 /// colour variants of a shared waveform.
-pub const PRESETS: [VisualPreset; 6] = [
+pub const SUBJECT_EFFECTS: [VisualPreset; 11] = [
     VisualPreset {
         kind: VisualKind::ParticleVeil,
         accent: [112, 246, 218],
         secondary: [108, 149, 255],
+        renderer: draw_particle_veil,
     },
     VisualPreset {
         kind: VisualKind::PulseTunnel,
         accent: [255, 92, 112],
         secondary: [244, 210, 138],
+        renderer: draw_pulse_tunnel,
     },
     VisualPreset {
         kind: VisualKind::OrbitalCore,
         accent: [104, 205, 255],
         secondary: [139, 109, 255],
+        renderer: draw_orbital_core,
     },
     VisualPreset {
         kind: VisualKind::SpectralVoid,
         accent: [174, 111, 255],
         secondary: [72, 218, 255],
+        renderer: draw_spectral_void,
     },
     VisualPreset {
         kind: VisualKind::VinylHalo,
         accent: [244, 210, 138],
         secondary: [255, 126, 91],
+        renderer: draw_vinyl_halo,
     },
     VisualPreset {
         kind: VisualKind::StarRiver,
         accent: [125, 232, 203],
         secondary: [126, 151, 255],
+        renderer: draw_star_river,
+    },
+    VisualPreset {
+        kind: VisualKind::PrismRibbons,
+        accent: [255, 111, 199],
+        secondary: [89, 214, 255],
+        renderer: draw_prism_ribbons,
+    },
+    VisualPreset {
+        kind: VisualKind::LuminousBloom,
+        accent: [255, 183, 92],
+        secondary: [164, 116, 255],
+        renderer: draw_luminous_bloom,
+    },
+    VisualPreset {
+        kind: VisualKind::RippleField,
+        accent: [155, 184, 207],
+        secondary: [111, 231, 255],
+        renderer: draw_ripple_field,
+    },
+    VisualPreset {
+        kind: VisualKind::ParticleTerrain,
+        accent: [244, 142, 75],
+        secondary: [57, 128, 232],
+        renderer: draw_particle_terrain,
+    },
+    VisualPreset {
+        kind: VisualKind::CoverRelief,
+        accent: [244, 210, 138],
+        secondary: [104, 205, 255],
+        renderer: draw_cover_relief,
     },
 ];
 
-/// User-facing response controls shared by all compositions.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Backwards-compatible registry name used by the rest of the application.
+pub const PRESETS: [VisualPreset; 11] = SUBJECT_EFFECTS;
+
+/// User-facing response controls shared by all subject effects.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct VisualTuning {
     pub intensity: f32,
     pub motion: f32,
@@ -103,21 +160,49 @@ impl VisualTuning {
     }
 }
 
-/// How an atmosphere source chooses its two gradient colours.
+/// The stage's primary, attention-carrying visual layer.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubjectLayer {
+    pub enabled: bool,
+    pub effect: usize,
+    pub tuning: VisualTuning,
+}
+
+impl Default for SubjectLayer {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            effect: 0,
+            tuning: VisualTuning::default(),
+        }
+    }
+}
+
+impl SubjectLayer {
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        self.effect %= PRESETS.len();
+        self.tuning = self.tuning.normalized();
+        self
+    }
+}
+
+/// How a light source chooses its two gradient colours.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum AtmospherePalette {
-    /// Follow the active composition's accent and secondary colours.
+pub enum LightPalette {
+    /// Follow the active subject's accent and secondary colours.
     #[default]
     Preset,
     /// Derive a private two-colour ramp from the source hue and saturation.
     Custom,
 }
 
-/// Radial opacity profile for one atmosphere source.
+/// Radial opacity profile for one light source.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum AtmosphereFalloff {
+pub enum LightFalloff {
     /// Wide, low-contrast light suited to off-window placement.
     #[default]
     Diffuse,
@@ -127,13 +212,13 @@ pub enum AtmosphereFalloff {
     Halo,
 }
 
-/// Geometric footprint of one atmosphere source.
+/// Geometric footprint of one light source.
 ///
-/// Geometry is deliberately independent from [`AtmosphereFalloff`]: the
+/// Geometry is deliberately independent from [`LightFalloff`]: the
 /// former controls where light exists, while the latter controls how it fades.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum AtmosphereSourceShape {
+pub enum LightSourceShape {
     /// A single isotropic light. This is the cheapest source to render.
     #[default]
     Circle,
@@ -143,10 +228,10 @@ pub enum AtmosphereSourceShape {
     Beam,
 }
 
-/// Audio feature that independently drives one atmosphere source.
+/// Audio feature that independently drives one light source.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum AtmosphereAudioResponse {
+pub enum LightAudioResponse {
     /// Keep the source entirely static apart from its optional drift.
     None,
     /// Follow broad perceptual energy.
@@ -165,7 +250,7 @@ pub enum AtmosphereAudioResponse {
 /// Optional procedural material field beneath the immediate light sources.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum AtmosphereFieldKind {
+pub enum LightMaterialKind {
     /// No texture field; light sources render directly over the base.
     #[default]
     None,
@@ -173,30 +258,34 @@ pub enum AtmosphereFieldKind {
     Watercolor,
     /// A refracted, line-like light field inspired by water caustics.
     Caustics,
+    /// Broad vertical curtains with slow spectral folds.
+    Aurora,
+    /// Layered, cloud-like colour with granular depth.
+    Nebula,
 }
 
-/// Configuration shared by the procedural atmosphere material fields.
+/// Configuration shared by the procedural ambient material fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct AtmosphereField {
-    pub kind: AtmosphereFieldKind,
+pub struct LightMaterial {
+    pub kind: LightMaterialKind,
     pub intensity: f32,
     pub scale: f32,
     pub motion: f32,
-    pub palette: AtmospherePalette,
+    pub palette: LightPalette,
     pub hue: f32,
     pub saturation: f32,
     pub seed: u32,
 }
 
-impl Default for AtmosphereField {
+impl Default for LightMaterial {
     fn default() -> Self {
         Self {
-            kind: AtmosphereFieldKind::None,
+            kind: LightMaterialKind::None,
             intensity: 0.85,
             scale: 1.0,
             motion: 0.28,
-            palette: AtmospherePalette::Preset,
+            palette: LightPalette::Preset,
             hue: 0.54,
             saturation: 0.68,
             seed: 0x57A7_0A11,
@@ -204,7 +293,7 @@ impl Default for AtmosphereField {
     }
 }
 
-impl AtmosphereField {
+impl LightMaterial {
     #[must_use]
     pub fn normalized(mut self) -> Self {
         let defaults = Self::default();
@@ -217,7 +306,7 @@ impl AtmosphereField {
     }
 }
 
-/// One independently positioned and animated atmosphere light.
+/// One independently positioned and animated ambient light.
 ///
 /// Positions are normalized window coordinates. Values outside `0..=1` are
 /// intentional: they place the source outside the window while its tail can
@@ -226,91 +315,91 @@ impl AtmosphereField {
 /// source; aspect and rotation define its long axis.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct AtmosphereSource {
+pub struct LightSource {
     pub x: f32,
     pub y: f32,
     pub radius: f32,
-    pub shape: AtmosphereSourceShape,
+    pub shape: LightSourceShape,
     pub aspect: f32,
     pub rotation: f32,
     pub intensity: f32,
-    pub palette: AtmospherePalette,
+    pub palette: LightPalette,
     pub hue: f32,
     pub saturation: f32,
-    pub falloff: AtmosphereFalloff,
+    pub falloff: LightFalloff,
     pub drift: f32,
     pub phase: f32,
-    pub audio_response: AtmosphereAudioResponse,
+    pub audio_response: LightAudioResponse,
     pub audio_intensity: f32,
     pub audio_scale: f32,
 }
 
-impl Default for AtmosphereSource {
+impl Default for LightSource {
     fn default() -> Self {
         Self {
             x: 0.56,
             y: 0.42,
             radius: 0.48,
-            shape: AtmosphereSourceShape::Circle,
+            shape: LightSourceShape::Circle,
             aspect: 2.0,
             rotation: 0.0,
             intensity: 1.0,
-            palette: AtmospherePalette::Preset,
+            palette: LightPalette::Preset,
             hue: 0.56,
             saturation: 0.72,
-            falloff: AtmosphereFalloff::Diffuse,
+            falloff: LightFalloff::Diffuse,
             drift: 0.0,
             phase: 0.0,
-            audio_response: AtmosphereAudioResponse::Energy,
+            audio_response: LightAudioResponse::Energy,
             audio_intensity: 0.0,
             audio_scale: 0.18,
         }
     }
 }
 
-impl AtmosphereSource {
+impl LightSource {
     /// A visible, deliberately offset source suitable for an Add action.
     #[must_use]
     pub fn added(index: usize) -> Self {
-        const POSITIONS: [(f32, f32); MAX_ATMOSPHERE_SOURCES] =
+        const POSITIONS: [(f32, f32); MAX_LIGHT_SOURCES] =
             [(0.56, 0.42), (-0.10, 0.66), (1.12, 0.22), (0.38, 1.10)];
-        const HUES: [f32; MAX_ATMOSPHERE_SOURCES] = [0.56, 0.78, 0.08, 0.46];
-        let slot = index.min(MAX_ATMOSPHERE_SOURCES - 1);
+        const HUES: [f32; MAX_LIGHT_SOURCES] = [0.56, 0.78, 0.08, 0.46];
+        let slot = index.min(MAX_LIGHT_SOURCES - 1);
         let phase = f32::from(u16::try_from(slot).unwrap_or_default())
-            / f32::from(u16::try_from(MAX_ATMOSPHERE_SOURCES).unwrap_or(1));
+            / f32::from(u16::try_from(MAX_LIGHT_SOURCES).unwrap_or(1));
         Self {
             x: POSITIONS[slot].0,
             y: POSITIONS[slot].1,
             radius: if slot == 0 { 0.48 } else { 0.42 },
             shape: if slot == 0 {
-                AtmosphereSourceShape::Circle
+                LightSourceShape::Circle
             } else if slot == 2 {
-                AtmosphereSourceShape::Beam
+                LightSourceShape::Beam
             } else {
-                AtmosphereSourceShape::Oval
+                LightSourceShape::Oval
             },
             aspect: if slot == 2 { 2.8 } else { 2.0 },
             rotation: [0.0, -0.08, 0.13, 0.22][slot],
             intensity: if slot == 0 { 1.0 } else { 0.78 },
             palette: if slot == 0 {
-                AtmospherePalette::Preset
+                LightPalette::Preset
             } else {
-                AtmospherePalette::Custom
+                LightPalette::Custom
             },
             hue: HUES[slot],
             saturation: 0.72,
             falloff: if slot == 2 {
-                AtmosphereFalloff::Halo
+                LightFalloff::Halo
             } else {
-                AtmosphereFalloff::Diffuse
+                LightFalloff::Diffuse
             },
             drift: 0.0,
             phase,
             audio_response: match slot {
-                1 => AtmosphereAudioResponse::Bass,
-                2 => AtmosphereAudioResponse::Treble,
-                3 => AtmosphereAudioResponse::Onset,
-                _ => AtmosphereAudioResponse::Energy,
+                1 => LightAudioResponse::Bass,
+                2 => LightAudioResponse::Treble,
+                3 => LightAudioResponse::Onset,
+                _ => LightAudioResponse::Energy,
             },
             audio_intensity: if slot == 0 { 0.0 } else { 0.22 },
             audio_scale: if slot == 0 { 0.18 } else { 0.12 },
@@ -337,47 +426,52 @@ impl AtmosphereSource {
     }
 }
 
-/// A composable atmosphere scene rendered independently from the composition.
+/// A composable light layer rendered independently from the subject effect.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Atmosphere {
+pub struct AmbientLayer {
     pub enabled: bool,
-    pub composition_visible: bool,
-    pub field: AtmosphereField,
-    pub sources: Vec<AtmosphereSource>,
+    pub field: LightMaterial,
+    pub sources: Vec<LightSource>,
+    #[serde(
+        default,
+        rename = "composition_visible",
+        skip_serializing,
+        skip_serializing_if = "Option::is_none"
+    )]
+    legacy_subject_enabled: Option<bool>,
 }
 
-impl Default for Atmosphere {
+impl Default for AmbientLayer {
     fn default() -> Self {
         Self {
             enabled: true,
-            composition_visible: true,
-            field: AtmosphereField::default(),
-            sources: vec![AtmosphereSource::default()],
+            field: LightMaterial::default(),
+            sources: vec![LightSource::default()],
+            legacy_subject_enabled: None,
         }
     }
 }
 
-impl Atmosphere {
+impl AmbientLayer {
     #[must_use]
     pub fn normalized(mut self) -> Self {
         self.field = self.field.normalized();
-        self.sources.truncate(MAX_ATMOSPHERE_SOURCES);
+        self.sources.truncate(MAX_LIGHT_SOURCES);
         self.sources = self
             .sources
             .into_iter()
-            .map(AtmosphereSource::normalized)
+            .map(LightSource::normalized)
             .collect();
         self
     }
 
     /// Adds a visible source when capacity permits.
     pub fn add_source(&mut self) -> bool {
-        if self.sources.len() >= MAX_ATMOSPHERE_SOURCES {
+        if self.sources.len() >= MAX_LIGHT_SOURCES {
             return false;
         }
-        self.sources
-            .push(AtmosphereSource::added(self.sources.len()));
+        self.sources.push(LightSource::added(self.sources.len()));
         true
     }
 
@@ -393,7 +487,34 @@ impl Atmosphere {
     fn has_motion(&self) -> bool {
         self.enabled
             && (self.sources.iter().any(|source| source.drift > 0.000_1)
-                || (self.field.kind != AtmosphereFieldKind::None && self.field.motion > 0.000_1))
+                || (self.field.kind != LightMaterialKind::None && self.field.motion > 0.000_1))
+    }
+
+    fn take_legacy_subject_enabled(&mut self) -> Option<bool> {
+        self.legacy_subject_enabled.take()
+    }
+}
+
+/// Complete visual-stage configuration. Subject and ambient are sibling modules
+/// and can be enabled, persisted, and evolved independently.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct VisualStage {
+    #[serde(alias = "focus")]
+    pub subject: SubjectLayer,
+    #[serde(alias = "lighting", alias = "light")]
+    pub ambient: AmbientLayer,
+}
+
+impl VisualStage {
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        if let Some(enabled) = self.ambient.take_legacy_subject_enabled() {
+            self.subject.enabled = enabled;
+        }
+        self.subject = self.subject.normalized();
+        self.ambient = self.ambient.normalized();
+        self
     }
 }
 
@@ -532,9 +653,11 @@ pub struct VisualState {
     pub position_ratio: f32,
     pub playing: bool,
     pub features: AudioFeatures,
+    pub subject_enabled: bool,
     pub preset: usize,
     pub tuning: VisualTuning,
-    atmosphere: Arc<Atmosphere>,
+    ambient: Arc<AmbientLayer>,
+    artwork: Option<usize>,
     viewport: Option<StageViewport>,
     transition: f32,
     metric_motion: AudioMetricMotion,
@@ -549,9 +672,11 @@ impl Default for VisualState {
             position_ratio: 0.0,
             playing: false,
             features: AudioFeatures::default(),
+            subject_enabled: true,
             preset: 0,
             tuning: VisualTuning::default(),
-            atmosphere: Arc::new(Atmosphere::default()),
+            ambient: Arc::new(AmbientLayer::default()),
+            artwork: None,
             viewport: None,
             transition: 0.0,
             metric_motion: AudioMetricMotion::default(),
@@ -569,22 +694,21 @@ impl VisualState {
         height: f32,
         playing: bool,
         position_ratio: f32,
-        preset: usize,
         measured: AudioFeatures,
-        tuning: VisualTuning,
-        atmosphere: &Atmosphere,
+        stage: &VisualStage,
     ) {
         let dt = dt.clamp(0.0, 0.1);
         self.width = width.max(1.0);
         self.height = height.max(1.0);
-        self.tuning = tuning.normalized();
-        if self.atmosphere.as_ref() != atmosphere {
-            self.atmosphere = Arc::new(atmosphere.clone().normalized());
+        self.subject_enabled = stage.subject.enabled;
+        self.tuning = stage.subject.tuning.normalized();
+        if self.ambient.as_ref() != &stage.ambient {
+            self.ambient = Arc::new(stage.ambient.clone().normalized());
         }
         self.elapsed += dt * self.tuning.motion;
         self.position_ratio = position_ratio.clamp(0.0, 1.0);
         self.playing = playing;
-        let preset = preset % PRESETS.len();
+        let preset = stage.subject.effect % PRESETS.len();
         if preset != self.preset {
             self.preset = preset;
             self.transition = 1.0;
@@ -629,16 +753,19 @@ impl VisualState {
             || self.transition > 0.0
             || !features_are_settled(&self.features)
             || !self.metric_motion.is_settled()
-            || self.atmosphere.has_motion()
+            || self.ambient.has_motion()
     }
 }
 
 pub type SharedVisualState = Arc<RwLock<VisualState>>;
 
 #[must_use]
-pub fn shared_state(preset: usize) -> SharedVisualState {
+pub fn shared_state(stage: &VisualStage) -> SharedVisualState {
     Arc::new(RwLock::new(VisualState {
-        preset: preset % PRESETS.len(),
+        subject_enabled: stage.subject.enabled,
+        preset: stage.subject.effect % PRESETS.len(),
+        tuning: stage.subject.tuning.normalized(),
+        ambient: Arc::new(stage.ambient.clone().normalized()),
         ..VisualState::default()
     }))
 }
@@ -669,7 +796,7 @@ fn material_texture_dimensions(logical_width: f32, logical_height: f32) -> (u32,
 fn generate_material_texture(key: &MaterialTextureKey) -> Vec<u8> {
     let pixel_count = (key.width as usize).saturating_mul(key.height as usize);
     let mut pixels = vec![0_u8; pixel_count.saturating_mul(4)];
-    if key.field.kind == AtmosphereFieldKind::None {
+    if key.field.kind == LightMaterialKind::None {
         return pixels;
     }
     let inverse_width = 1.0 / key.width.max(1) as f32;
@@ -680,9 +807,11 @@ fn generate_material_texture(key: &MaterialTextureKey) -> Vec<u8> {
         for x in 0..key.width {
             let scene_x = (x as f32 + 0.5).mul_add(inverse_width * span, -MATERIAL_OVERSCAN);
             let pixel = match key.field.kind {
-                AtmosphereFieldKind::None => [0, 0, 0, 0],
-                AtmosphereFieldKind::Watercolor => watercolor_pixel(key, scene_x, scene_y),
-                AtmosphereFieldKind::Caustics => caustics_pixel(key, scene_x, scene_y),
+                LightMaterialKind::None => [0, 0, 0, 0],
+                LightMaterialKind::Watercolor => watercolor_pixel(key, scene_x, scene_y),
+                LightMaterialKind::Caustics => caustics_pixel(key, scene_x, scene_y),
+                LightMaterialKind::Aurora => aurora_pixel(key, scene_x, scene_y),
+                LightMaterialKind::Nebula => nebula_pixel(key, scene_x, scene_y),
             };
             let offset = ((y as usize) * (key.width as usize) + x as usize) * 4;
             pixels[offset..offset + 4].copy_from_slice(&pixel);
@@ -693,8 +822,8 @@ fn generate_material_texture(key: &MaterialTextureKey) -> Vec<u8> {
 
 fn material_palette(key: &MaterialTextureKey) -> ([u8; 3], [u8; 3]) {
     match key.field.palette {
-        AtmospherePalette::Preset => (key.preset_accent, key.preset_secondary),
-        AtmospherePalette::Custom => custom_atmosphere_palette(key.field.hue, key.field.saturation),
+        LightPalette::Preset => (key.preset_accent, key.preset_secondary),
+        LightPalette::Custom => custom_light_palette(key.field.hue, key.field.saturation),
     }
 }
 
@@ -713,8 +842,8 @@ fn watercolor_pixel(key: &MaterialTextureKey, scene_x: f32, scene_y: f32) -> [u8
         * 0.15;
 
     let fallback_anchors = [
-        MaterialAnchor::from(&AtmosphereSource::added(0)),
-        MaterialAnchor::from(&AtmosphereSource::added(1)),
+        MaterialAnchor::from(&LightSource::added(0)),
+        MaterialAnchor::from(&LightSource::added(1)),
     ];
     let anchors: &[MaterialAnchor] = if key.anchors.is_empty() {
         &fallback_anchors
@@ -740,9 +869,9 @@ fn watercolor_pixel(key: &MaterialTextureKey, scene_x: f32, scene_y: f32) -> [u8
             let local_y = (-rotation.sin()).mul_add(dx, rotation.cos() * dy);
             let radius = radius.max(0.025);
             let distance = match anchor.shape {
-                AtmosphereSourceShape::Circle => local_x.hypot(local_y) / radius,
-                AtmosphereSourceShape::Oval => (local_x / anchor.aspect).hypot(local_y) / radius,
-                AtmosphereSourceShape::Beam => {
+                LightSourceShape::Circle => local_x.hypot(local_y) / radius,
+                LightSourceShape::Oval => (local_x / anchor.aspect).hypot(local_y) / radius,
+                LightSourceShape::Beam => {
                     let longitudinal = local_x.abs() / (radius * anchor.aspect);
                     let lateral = local_y.abs() / radius;
                     (longitudinal.powi(4) + lateral.powi(4)).powf(0.25)
@@ -821,6 +950,55 @@ fn caustics_pixel(key: &MaterialTextureKey, scene_x: f32, scene_y: f32) -> [u8; 
     )
 }
 
+#[allow(clippy::cast_precision_loss)]
+fn aurora_pixel(key: &MaterialTextureKey, scene_x: f32, scene_y: f32) -> [u8; 4] {
+    let (primary, secondary) = material_palette(key);
+    let aspect = key.width as f32 / key.height.max(1) as f32;
+    let scale = key.field.scale;
+    let x = scene_x * aspect * scale;
+    let y = scene_y * scale;
+    let warp = fbm(x * 1.7, y * 0.72, key.field.seed) - 0.5;
+    let fine_warp = fbm(x * 4.8 + 7.3, y * 1.4 - 2.1, key.field.seed ^ 0x6C8E_9CF5) - 0.5;
+    let curtain = (x * 5.2 + warp * 2.8 + fine_warp * 0.9).sin();
+    let second_curtain = (x * 3.4 - warp * 2.1 + 1.7).sin();
+    let crest = 0.42 + curtain * 0.14 + second_curtain * 0.06;
+    let distance = (y - crest).abs();
+    let ribbon = (-distance * distance * 34.0).exp();
+    let tail = ((y - crest) * 3.2).clamp(0.0, 1.0);
+    let striation = 0.58 + (x * 28.0 + fine_warp * 5.0).sin().abs() * 0.42;
+    let alpha = ribbon * (1.0 - tail * 0.44) * striation * 0.26 * key.field.intensity;
+    let colour = mix_rgb(
+        primary,
+        secondary,
+        (scene_x * 0.45 + warp + 0.5).rem_euclid(1.0),
+    );
+    premultiplied_pixel(colour.map(f32::from), alpha.clamp(0.0, 0.42))
+}
+
+fn nebula_pixel(key: &MaterialTextureKey, scene_x: f32, scene_y: f32) -> [u8; 4] {
+    let (primary, secondary) = material_palette(key);
+    let scale = key.field.scale;
+    let broad = fbm(scene_x * 2.2 * scale, scene_y * 2.2 * scale, key.field.seed);
+    let folds = fbm(
+        scene_x * 5.1 * scale + broad * 1.6,
+        scene_y * 4.7 * scale - broad * 1.2,
+        key.field.seed ^ 0xB529_7A4D,
+    );
+    let grain = fbm(
+        scene_x * 17.0 * scale,
+        scene_y * 17.0 * scale,
+        key.field.seed ^ 0x68E3_1DA4,
+    );
+    let density = smoothstep(0.43, 0.78, broad * 0.66 + folds * 0.44) * (0.72 + grain * 0.28);
+    let alpha = density.powf(1.22) * 0.24 * key.field.intensity;
+    let colour = mix_rgb(
+        primary,
+        secondary,
+        (folds * 0.74 + grain * 0.26).clamp(0.0, 1.0),
+    );
+    premultiplied_pixel(colour.map(f32::from), alpha.clamp(0.0, 0.40))
+}
+
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn mix_rgb(first: [u8; 3], second: [u8; 3], amount: f32) -> [u8; 3] {
     let amount = amount.clamp(0.0, 1.0);
@@ -888,14 +1066,14 @@ struct MaterialAnchor {
     x: f32,
     y: f32,
     radius: f32,
-    shape: AtmosphereSourceShape,
+    shape: LightSourceShape,
     aspect: f32,
     rotation: f32,
     phase: f32,
 }
 
-impl From<&AtmosphereSource> for MaterialAnchor {
-    fn from(source: &AtmosphereSource) -> Self {
+impl From<&LightSource> for MaterialAnchor {
+    fn from(source: &LightSource) -> Self {
         Self {
             x: source.x,
             y: source.y,
@@ -912,7 +1090,7 @@ impl From<&AtmosphereSource> for MaterialAnchor {
 struct MaterialTextureKey {
     width: u32,
     height: u32,
-    field: AtmosphereField,
+    field: LightMaterial,
     anchors: Vec<MaterialAnchor>,
     preset_accent: [u8; 3],
     preset_secondary: [u8; 3],
@@ -930,36 +1108,31 @@ impl MaterialTextureCache {
     fn prepare(
         &mut self,
         device_raw: *mut c_void,
-        atmosphere: &Atmosphere,
+        ambient: &AmbientLayer,
         preset: VisualPreset,
         logical_width: f32,
         logical_height: f32,
     ) {
-        if !atmosphere.enabled || atmosphere.field.kind == AtmosphereFieldKind::None {
+        if !ambient.enabled || ambient.field.kind == LightMaterialKind::None {
             self.clear();
             return;
         }
         let (width, height) = material_texture_dimensions(logical_width, logical_height);
-        let mut texture_field = atmosphere.field.clone();
+        let mut texture_field = ambient.field.clone();
         // Motion only changes the destination transform and never invalidates
         // the generated pixels.
         texture_field.motion = 0.0;
-        let (preset_accent, preset_secondary) =
-            if texture_field.palette == AtmospherePalette::Preset {
-                (preset.accent, preset.secondary)
-            } else {
-                ([0; 3], [0; 3])
-            };
+        let (preset_accent, preset_secondary) = if texture_field.palette == LightPalette::Preset {
+            (preset.accent, preset.secondary)
+        } else {
+            ([0; 3], [0; 3])
+        };
         let key = MaterialTextureKey {
             width,
             height,
             field: texture_field,
-            anchors: if atmosphere.field.kind == AtmosphereFieldKind::Watercolor {
-                atmosphere
-                    .sources
-                    .iter()
-                    .map(MaterialAnchor::from)
-                    .collect()
+            anchors: if matches!(ambient.field.kind, LightMaterialKind::Watercolor) {
+                ambient.sources.iter().map(MaterialAnchor::from).collect()
             } else {
                 Vec::new()
             },
@@ -1010,14 +1183,20 @@ pub struct VisualRenderer {
 impl VisualRenderer {
     /// Paints the current visual snapshot into Iris's live Flux canvas.
     #[allow(unsafe_code, clippy::needless_pass_by_value)]
-    pub fn paint(&mut self, host: PaintHost, state: &SharedVisualState) {
-        let snapshot = state
+    pub fn paint(
+        &mut self,
+        host: PaintHost,
+        state: &SharedVisualState,
+        artwork: Option<*mut c_void>,
+    ) {
+        let mut snapshot = state
             .read()
             .map_or_else(|_| VisualState::default(), |state| state.clone());
+        snapshot.artwork = artwork.map(|image| image as usize);
         let preset = PRESETS[snapshot.preset % PRESETS.len()];
         self.shell_material.prepare(
             host.device(),
-            &snapshot.atmosphere,
+            &snapshot.ambient,
             preset,
             snapshot.width,
             snapshot.height,
@@ -1025,7 +1204,7 @@ impl VisualRenderer {
         if let Some(viewport) = snapshot.viewport.filter(|viewport| viewport.is_visible()) {
             self.stage_material.prepare(
                 host.device(),
-                &snapshot.atmosphere,
+                &snapshot.ambient,
                 preset,
                 viewport.width,
                 viewport.height,
@@ -1189,15 +1368,8 @@ fn draw_stage_with_material(
     material: Option<&Image>,
 ) {
     draw_backdrop_with_material(canvas, state, preset, material);
-    if state.atmosphere.composition_visible {
-        match preset.kind {
-            VisualKind::ParticleVeil => draw_particle_veil(canvas, state, preset),
-            VisualKind::PulseTunnel => draw_pulse_tunnel(canvas, state, preset),
-            VisualKind::OrbitalCore => draw_orbital_core(canvas, state, preset),
-            VisualKind::SpectralVoid => draw_spectral_void(canvas, state, preset),
-            VisualKind::VinylHalo => draw_vinyl_halo(canvas, state, preset),
-            VisualKind::StarRiver => draw_star_river(canvas, state, preset),
-        }
+    if state.subject_enabled {
+        preset.draw(canvas, state);
     }
     draw_transition(canvas, state, preset);
 }
@@ -1214,7 +1386,7 @@ fn draw_app_backdrop_with_material(
     material: Option<&Image>,
 ) {
     // Keep the shell behind the isolated Visual Stage on the same diffuse
-    // gradient as every other tab. Only the composition itself is clipped to
+    // gradient as every other tab. Only the subject itself is clipped to
     // the stage viewport, so switching tabs no longer changes the page glow.
     draw_backdrop_with_material(canvas, state, preset, material);
 }
@@ -1244,19 +1416,21 @@ fn draw_backdrop_with_material(
     if let Some(material) = material {
         draw_material_field(canvas, state, material);
     }
-    draw_atmosphere(canvas, state, preset);
+    draw_ambient(canvas, state, preset);
 }
 
 fn draw_material_field(canvas: &Canvas, state: &VisualState, material: &Image) {
-    let field = &state.atmosphere.field;
+    let field = &state.ambient.field;
     let margin = MATERIAL_OVERSCAN;
     let phase = f32::from(u16::try_from(field.seed & 0xffff).unwrap_or_default())
         / f32::from(u16::MAX)
         * std::f32::consts::TAU;
     let speed = match field.kind {
-        AtmosphereFieldKind::Watercolor => 0.025,
-        AtmosphereFieldKind::Caustics => 0.070,
-        AtmosphereFieldKind::None => 0.0,
+        LightMaterialKind::Watercolor => 0.025,
+        LightMaterialKind::Caustics => 0.070,
+        LightMaterialKind::Aurora => 0.042,
+        LightMaterialKind::Nebula => 0.018,
+        LightMaterialKind::None => 0.0,
     };
     let travel = field.motion * margin * 0.34;
     let angle = state.elapsed.mul_add(speed, phase);
@@ -1271,21 +1445,21 @@ fn draw_material_field(canvas: &Canvas, state: &VisualState, material: &Image) {
     );
 }
 
-fn draw_atmosphere(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
-    if !state.atmosphere.enabled {
+fn draw_ambient(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
+    if !state.ambient.enabled {
         return;
     }
 
-    for source in &state.atmosphere.sources {
-        draw_atmosphere_source(canvas, state, preset, source);
+    for source in &state.ambient.sources {
+        draw_light_source(canvas, state, preset, source);
     }
 }
 
-fn draw_atmosphere_source(
+fn draw_light_source(
     canvas: &Canvas,
     state: &VisualState,
     preset: VisualPreset,
-    source: &AtmosphereSource,
+    source: &LightSource,
 ) {
     let (width, height) = (state.width, state.height);
     let phase = source.phase * std::f32::consts::TAU;
@@ -1295,16 +1469,16 @@ fn draw_atmosphere_source(
         width.mul_add(source.x, drift_angle.cos() * drift_radius),
         height.mul_add(source.y, drift_angle.sin() * drift_radius),
     );
-    let audio_drive = atmosphere_audio_drive(&state.features, source.audio_response);
-    let radius = atmosphere_source_radius(width, height, source.radius)
+    let audio_drive = light_audio_drive(&state.features, source.audio_response);
+    let radius = light_source_radius(width, height, source.radius)
         * audio_drive.mul_add(source.audio_scale, 1.0);
     if radius <= f32::EPSILON {
         return;
     }
 
     let (primary, secondary) = match source.palette {
-        AtmospherePalette::Preset => (preset.accent, preset.secondary),
-        AtmospherePalette::Custom => custom_atmosphere_palette(source.hue, source.saturation),
+        LightPalette::Preset => (preset.accent, preset.secondary),
+        LightPalette::Custom => custom_light_palette(source.hue, source.saturation),
     };
     let strength =
         source.intensity * state.tuning.glow * audio_drive.mul_add(source.audio_intensity, 1.0);
@@ -1313,7 +1487,7 @@ fn draw_atmosphere_source(
     let axis_span = radius * (source.aspect - 1.0);
 
     match source.shape {
-        AtmosphereSourceShape::Circle => draw_atmosphere_lobe(
+        LightSourceShape::Circle => draw_light_lobe(
             canvas,
             (width, height),
             center,
@@ -1323,7 +1497,7 @@ fn draw_atmosphere_source(
             secondary,
             source.falloff,
         ),
-        AtmosphereSourceShape::Oval if axis_span <= radius * 0.01 => draw_atmosphere_lobe(
+        LightSourceShape::Oval if axis_span <= radius * 0.01 => draw_light_lobe(
             canvas,
             (width, height),
             center,
@@ -1333,7 +1507,7 @@ fn draw_atmosphere_source(
             secondary,
             source.falloff,
         ),
-        AtmosphereSourceShape::Oval => {
+        LightSourceShape::Oval => {
             // A bounded chain of soft radial lobes approximates an anisotropic
             // area light without allocating a source texture or regenerating
             // pixels for audio-driven scale changes.
@@ -1345,7 +1519,7 @@ fn draw_atmosphere_source(
                     center.0 + axis.0 * axis_span * position,
                     center.1 + axis.1 * axis_span * position,
                 );
-                draw_atmosphere_lobe(
+                draw_light_lobe(
                     canvas,
                     (width, height),
                     lobe_center,
@@ -1357,7 +1531,7 @@ fn draw_atmosphere_source(
                 );
             }
         }
-        AtmosphereSourceShape::Beam => {
+        LightSourceShape::Beam => {
             // A capsule profile keeps directional light soft at both ends and
             // remains useful when its centre sits beyond a window edge.
             for index in 0_u16..9 {
@@ -1366,7 +1540,7 @@ fn draw_atmosphere_source(
                     center.0 + axis.0 * axis_span * position,
                     center.1 + axis.1 * axis_span * position,
                 );
-                draw_atmosphere_lobe(
+                draw_light_lobe(
                     canvas,
                     (width, height),
                     lobe_center,
@@ -1382,7 +1556,7 @@ fn draw_atmosphere_source(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_atmosphere_lobe(
+fn draw_light_lobe(
     canvas: &Canvas,
     viewport: (f32, f32),
     center: (f32, f32),
@@ -1390,7 +1564,7 @@ fn draw_atmosphere_lobe(
     strength: f32,
     primary: [u8; 3],
     secondary: [u8; 3],
-    falloff: AtmosphereFalloff,
+    falloff: LightFalloff,
 ) {
     let left = (center.0 - radius).max(0.0);
     let top = (center.1 - radius).max(0.0);
@@ -1419,9 +1593,9 @@ fn draw_atmosphere_lobe(
         GradientStop::new(1.0, color(primary, 0)),
     ];
     let stops: &[GradientStop] = match falloff {
-        AtmosphereFalloff::Diffuse => &diffuse,
-        AtmosphereFalloff::Focused => &focused,
-        AtmosphereFalloff::Halo => &halo,
+        LightFalloff::Diffuse => &diffuse,
+        LightFalloff::Focused => &focused,
+        LightFalloff::Halo => &halo,
     };
     canvas.fill_rect_radial_gradient(
         (left, top, right - left, bottom - top),
@@ -1431,23 +1605,23 @@ fn draw_atmosphere_lobe(
     );
 }
 
-fn atmosphere_source_radius(width: f32, height: f32, source_radius: f32) -> f32 {
+fn light_source_radius(width: f32, height: f32, source_radius: f32) -> f32 {
     width.min(height * 1.7) * source_radius
 }
 
-fn atmosphere_audio_drive(features: &AudioFeatures, response: AtmosphereAudioResponse) -> f32 {
+fn light_audio_drive(features: &AudioFeatures, response: LightAudioResponse) -> f32 {
     let value = match response {
-        AtmosphereAudioResponse::None => 0.0,
-        AtmosphereAudioResponse::Energy => features.energy,
-        AtmosphereAudioResponse::Bass => features.bass,
-        AtmosphereAudioResponse::Mid => features.mid,
-        AtmosphereAudioResponse::Treble => features.treble,
-        AtmosphereAudioResponse::Onset => features.onset,
+        LightAudioResponse::None => 0.0,
+        LightAudioResponse::Energy => features.energy,
+        LightAudioResponse::Bass => features.bass,
+        LightAudioResponse::Mid => features.mid,
+        LightAudioResponse::Treble => features.treble,
+        LightAudioResponse::Onset => features.onset,
     };
     finite_or(value, 0.0).clamp(0.0, 1.0)
 }
 
-fn custom_atmosphere_palette(hue: f32, saturation: f32) -> ([u8; 3], [u8; 3]) {
+fn custom_light_palette(hue: f32, saturation: f32) -> ([u8; 3], [u8; 3]) {
     (
         hsl_to_rgb(hue, saturation, 0.68),
         hsl_to_rgb((hue + 0.08).rem_euclid(1.0), saturation * 0.82, 0.52),
@@ -1923,6 +2097,415 @@ fn draw_star_river(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
     }
 }
 
+/// Draws a reusable sampled spectrum ribbon. Effects can vary geometry,
+/// phase, palette, and density without duplicating the audio sampling rules.
+#[allow(clippy::too_many_arguments)]
+fn draw_spectrum_ribbon(
+    canvas: &Canvas,
+    state: &VisualState,
+    tint: [u8; 3],
+    baseline: f32,
+    amplitude: f32,
+    frequency: f32,
+    phase: f32,
+    thickness: f32,
+    alpha: f32,
+) {
+    for index in 0_u16..128 {
+        let u = f32::from(index) / 127.0;
+        let band = spectrum_at(&state.features.spectrum, (u + phase * 0.07).fract());
+        let envelope = (u * std::f32::consts::PI).sin().powf(0.52);
+        let wave = (u * frequency + phase + state.elapsed * 0.46).sin();
+        let harmonic = (u * frequency * 0.47 - phase * 1.7 + state.elapsed * 0.21).cos();
+        let x = state.width * (0.08 + u * 0.84);
+        let y = baseline + envelope * amplitude * (wave * 0.72 + harmonic * 0.28) * (0.45 + band);
+        dot(
+            canvas,
+            x,
+            y,
+            thickness * (0.72 + band * 1.25),
+            color(tint, alpha_u8(alpha * (0.45 + band * 0.9))),
+        );
+    }
+}
+
+fn draw_prism_ribbons(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
+    let center = (state.width * 0.52, state.height * 0.47);
+    canvas.fill_rect_radial_gradient(
+        (0.0, 0.0, state.width, state.height),
+        center,
+        state.width.min(state.height) * 0.72,
+        &[
+            GradientStop::new(0.0, color(preset.accent, 24)),
+            GradientStop::new(0.48, color(preset.secondary, 11)),
+            GradientStop::new(1.0, color(preset.secondary, 0)),
+        ],
+    );
+
+    let spread = state.height * (0.045 + state.tuning.depth * 0.018);
+    for layer in 0_u16..7 {
+        let unit = f32::from(layer) / 6.0;
+        let tint = mix_rgb(preset.accent, preset.secondary, unit);
+        let drive = spectrum_at(&state.features.spectrum, unit);
+        draw_spectrum_ribbon(
+            canvas,
+            state,
+            tint,
+            center.1 + (f32::from(layer) - 3.0) * spread,
+            state.height * (0.045 + drive * 0.085),
+            11.0 + f32::from(layer) * 1.7,
+            f32::from(layer) * 0.82,
+            0.85 + unit * 0.65,
+            54.0 + drive * 92.0,
+        );
+    }
+
+    for index in 0_u32..90 {
+        let depth = hash01(index * 59 + 7);
+        let x = hash01(index * 31 + 13) * state.width;
+        let travel = (state.elapsed * (0.8 + depth * 2.4)).rem_euclid(state.height * 0.34);
+        let y = (hash01(index * 83) * state.height + travel).rem_euclid(state.height);
+        dot(
+            canvas,
+            x,
+            y,
+            0.55 + depth * 1.35,
+            color(
+                if index % 2 == 0 {
+                    preset.accent
+                } else {
+                    preset.secondary
+                },
+                alpha_u8(12.0 + depth * 36.0),
+            ),
+        );
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn draw_luminous_bloom(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
+    let center_x = state.width * 0.54;
+    let center_y = state.height * 0.45;
+    let base = state.width.min(state.height) * (0.075 + state.features.bass * 0.022);
+    let bloom_radius = base * (3.4 + state.tuning.depth * 0.9);
+    canvas.fill_rect_radial_gradient(
+        (0.0, 0.0, state.width, state.height),
+        (center_x, center_y),
+        bloom_radius * 1.34,
+        &[
+            GradientStop::new(0.0, color(preset.accent, 44)),
+            GradientStop::new(0.32, color(preset.secondary, 20)),
+            GradientStop::new(1.0, color(preset.secondary, 0)),
+        ],
+    );
+
+    for petal in 0_u16..18 {
+        let unit = f32::from(petal) / 18.0;
+        let band = spectrum_at(&state.features.spectrum, unit);
+        let angle = unit * std::f32::consts::TAU
+            + state.elapsed * (0.075 + state.features.pitch_confidence * 0.09)
+            + (state.elapsed * 0.19 + unit * 8.0).sin() * 0.035;
+        let petal_length = bloom_radius * (0.58 + band * 0.56 + state.features.onset * 0.12);
+        let tint = mix_rgb(preset.accent, preset.secondary, (unit * 2.0).fract());
+        for sample in 0_u16..20 {
+            let radial = f32::from(sample) / 19.0;
+            let curl = (radial * std::f32::consts::PI).sin() * (0.06 + state.features.mid * 0.10);
+            let sample_angle = angle + curl * if petal % 2 == 0 { 1.0 } else { -1.0 };
+            let radius = base * 0.72 + petal_length * radial.powf(0.78);
+            let x = center_x + sample_angle.cos() * radius;
+            let y = center_y + sample_angle.sin() * radius * 0.72;
+            let taper = (radial * std::f32::consts::PI).sin().powf(0.55);
+            dot(
+                canvas,
+                x,
+                y,
+                0.7 + taper * (1.4 + band * 2.2),
+                color(tint, alpha_u8(18.0 + taper * (54.0 + band * 104.0))),
+            );
+        }
+    }
+
+    circle(canvas, center_x, center_y, base, rgba(4, 5, 10, 236));
+    ring(
+        canvas,
+        center_x,
+        center_y,
+        base * (1.02 + state.features.onset * 0.08),
+        color(
+            preset.accent,
+            alpha_u8(110.0 + state.features.onset * 116.0),
+        ),
+        1.2 + state.features.onset * 2.8,
+    );
+    circle(
+        canvas,
+        center_x,
+        center_y,
+        base * 0.22,
+        color(preset.secondary, 190),
+    );
+}
+
+#[derive(Clone, Copy)]
+struct PointFieldSample {
+    height: f32,
+    tint: [u8; 3],
+    alpha: f32,
+    size: f32,
+}
+
+/// Shared orthographic projection for point-field subjects. The effect owns
+/// only its height and colour function; grid generation, depth projection,
+/// sizing, and submission stay reusable.
+fn draw_projected_point_field(
+    canvas: &Canvas,
+    state: &VisualState,
+    columns: u16,
+    rows: u16,
+    mut sample: impl FnMut(f32, f32) -> PointFieldSample,
+) {
+    let center_x = state.width * 0.52;
+    let center_y = state.height * 0.46;
+    let span_x = state.width.min(state.height * 1.55) * 0.48;
+    let span_y = state.height * 0.29;
+    for row in 0..rows {
+        let v = f32::from(row) / f32::from(rows.saturating_sub(1).max(1));
+        for column in 0..columns {
+            let u = f32::from(column) / f32::from(columns.saturating_sub(1).max(1));
+            let point = sample(u, v);
+            let world_x = u - 0.5;
+            let world_z = v - 0.5;
+            let x = center_x + (world_x - world_z) * span_x;
+            let y = center_y + (world_x + world_z) * span_y
+                - point.height * state.height * 0.085 * state.tuning.depth;
+            let perspective = 0.72 + v * 0.42;
+            dot(
+                canvas,
+                x,
+                y,
+                point.size * perspective,
+                color(point.tint, alpha_u8(point.alpha * perspective)),
+            );
+        }
+    }
+}
+
+fn draw_ripple_field(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
+    let ripple_origin = (
+        0.5 + (state.elapsed * 0.17).sin() * 0.18,
+        0.5 + (state.elapsed * 0.13).cos() * 0.16,
+    );
+    draw_projected_point_field(canvas, state, 48, 32, |u, v| {
+        let center_distance = (u - 0.5).hypot(v - 0.5);
+        let ripple_distance = (u - ripple_origin.0).hypot(v - ripple_origin.1);
+        let base = (center_distance * 22.0 - state.elapsed * 2.0).sin() * 0.10;
+        let envelope = (1.0 - ripple_distance * 2.2).clamp(0.0, 1.0);
+        let ripple = (ripple_distance * 44.0 - state.elapsed * 7.0).cos()
+            * envelope
+            * (0.08 + state.features.onset * 0.34);
+        let band = spectrum_at(&state.features.spectrum, u);
+        let height = base + ripple + band * 0.18;
+        PointFieldSample {
+            height,
+            tint: mix_rgb(
+                preset.accent,
+                preset.secondary,
+                (height + 0.24).clamp(0.0, 0.48) / 0.48,
+            ),
+            alpha: 26.0 + band * 102.0 + envelope * state.features.onset * 86.0,
+            size: 0.72 + band * 1.65 + envelope * state.features.onset * 1.4,
+        }
+    });
+}
+
+fn draw_particle_terrain(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
+    draw_projected_point_field(canvas, state, 52, 34, |u, v| {
+        let x = (u - 0.5) * 10.0;
+        let z = (v - 0.5) * 10.0;
+        let time = state.elapsed;
+        let wave = (x * 0.45 + time * 0.80).sin() * 0.34
+            + (z * 0.50 - time * 0.65).sin() * 0.29
+            + ((x + z) * 0.33 + time * 1.10).sin() * 0.16
+            + ((x - z) * 0.70 - time * 1.40).sin() * 0.10;
+        let band = spectrum_at(&state.features.spectrum, (u * 0.74 + v * 0.26).fract());
+        let height = wave + band * 0.42 + state.features.bass * 0.11;
+        let crest = ((height + 0.72) / 1.44).clamp(0.0, 1.0);
+        let warm = mix_rgb(preset.secondary, preset.accent, crest);
+        PointFieldSample {
+            height,
+            tint: mix_rgb(warm, [255, 247, 224], (crest - 0.62).max(0.0) * 1.8),
+            alpha: 22.0 + crest * 88.0 + band * 56.0,
+            size: 0.58 + crest * 1.46 + band * 0.78,
+        }
+    });
+}
+
+#[allow(unsafe_code)]
+fn with_affine_rect(
+    canvas: &Canvas,
+    origin: (f32, f32),
+    x_axis: (f32, f32),
+    y_axis: (f32, f32),
+    draw: impl FnOnce(&Canvas),
+) {
+    canvas.save();
+    let transform = flux::sys::flux_mat3x2 {
+        m: [x_axis.0, x_axis.1, y_axis.0, y_axis.1, origin.0, origin.1],
+    };
+    unsafe {
+        flux::sys::flux_canvas_transform(canvas.as_raw(), transform);
+    }
+    draw(canvas);
+    canvas.restore();
+}
+
+fn fill_affine_rect(
+    canvas: &Canvas,
+    origin: (f32, f32),
+    x_axis: (f32, f32),
+    y_axis: (f32, f32),
+    fill: u32,
+) {
+    with_affine_rect(canvas, origin, x_axis, y_axis, |canvas| {
+        canvas.fill_rect(0.0, 0.0, 1.0, 1.0, fill);
+    });
+}
+
+#[allow(unsafe_code, clippy::too_many_arguments)]
+fn draw_affine_image_sub(
+    canvas: &Canvas,
+    image: *mut flux::sys::flux_image,
+    origin: (f32, f32),
+    x_axis: (f32, f32),
+    y_axis: (f32, f32),
+    u: f32,
+    v: f32,
+    du: f32,
+    dv: f32,
+) {
+    with_affine_rect(canvas, origin, x_axis, y_axis, |canvas| unsafe {
+        flux::sys::flux_canvas_draw_image_sub(
+            canvas.as_raw(),
+            image,
+            flux::sys::flux_rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            },
+            flux::sys::flux_rect {
+                x: u,
+                y: v,
+                w: du,
+                h: dv,
+            },
+        );
+    });
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn draw_cover_relief(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
+    const COLUMNS: u16 = 10;
+    const ROWS: u16 = 10;
+    let cell = state.width.min(state.height * 1.45) * 0.043;
+    let x_axis = (cell * 0.84, cell * 0.38);
+    let y_axis = (-cell * 0.84, cell * 0.38);
+    let origin = (
+        state.width * 0.52,
+        state.height * 0.31 - f32::from(COLUMNS + ROWS) * cell * 0.19,
+    );
+    let artwork = state
+        .artwork
+        .map(|image| image as *mut flux::sys::flux_image);
+    let base_depth = (cell * 0.34).max(2.0);
+
+    canvas.fill_rect_radial_gradient(
+        (0.0, 0.0, state.width, state.height),
+        (state.width * 0.52, state.height * 0.52),
+        state.width.min(state.height) * 0.55,
+        &[
+            GradientStop::new(0.0, color(preset.accent, 22)),
+            GradientStop::new(0.55, color(preset.secondary, 8)),
+            GradientStop::new(1.0, color(preset.secondary, 0)),
+        ],
+    );
+
+    for diagonal in 0..(COLUMNS + ROWS - 1) {
+        for row in 0..ROWS {
+            if diagonal < row {
+                continue;
+            }
+            let column = diagonal - row;
+            if column >= COLUMNS {
+                continue;
+            }
+            let u = f32::from(column) / f32::from(COLUMNS);
+            let v = f32::from(row) / f32::from(ROWS);
+            let center_u = (f32::from(column) + 0.5) / f32::from(COLUMNS);
+            let center_v = (f32::from(row) + 0.5) / f32::from(ROWS);
+            let band = spectrum_at(
+                &state.features.spectrum,
+                (center_u * 0.72 + center_v * 0.28).fract(),
+            );
+            let radial = (center_u - 0.5).hypot(center_v - 0.5);
+            let pulse = (radial * 22.0 - state.elapsed * 4.0).cos() * state.features.onset;
+            let lift =
+                (band * 0.82 + state.features.bass * 0.18 + pulse.max(0.0) * 0.34) * cell * 2.4;
+            let top = (
+                origin.0 + f32::from(column) * x_axis.0 + f32::from(row) * y_axis.0,
+                origin.1 + f32::from(column) * x_axis.1 + f32::from(row) * y_axis.1 - lift,
+            );
+            let extrusion = (0.0, base_depth + lift);
+            let left_tint = color(
+                mix_rgb(preset.secondary, [4, 6, 11], 0.62),
+                alpha_u8(92.0 + band * 92.0),
+            );
+            let right_tint = color(
+                mix_rgb(preset.accent, [5, 7, 12], 0.70),
+                alpha_u8(76.0 + band * 82.0),
+            );
+
+            fill_affine_rect(
+                canvas,
+                (top.0 + y_axis.0, top.1 + y_axis.1),
+                x_axis,
+                extrusion,
+                left_tint,
+            );
+            fill_affine_rect(
+                canvas,
+                (top.0 + x_axis.0, top.1 + x_axis.1),
+                y_axis,
+                extrusion,
+                right_tint,
+            );
+
+            if let Some(image) = artwork {
+                draw_affine_image_sub(
+                    canvas,
+                    image,
+                    top,
+                    x_axis,
+                    y_axis,
+                    u,
+                    v,
+                    1.0 / f32::from(COLUMNS),
+                    1.0 / f32::from(ROWS),
+                );
+            } else {
+                let fallback = mix_rgb(preset.accent, preset.secondary, (u + v) * 0.5);
+                fill_affine_rect(
+                    canvas,
+                    top,
+                    x_axis,
+                    y_axis,
+                    color(fallback, alpha_u8(132.0 + band * 92.0)),
+                );
+            }
+        }
+    }
+}
+
 fn draw_transition(canvas: &Canvas, state: &VisualState, preset: VisualPreset) {
     if state.transition <= 0.0 {
         return;
@@ -2239,19 +2822,19 @@ mod tests {
     }
 
     #[test]
-    fn atmosphere_radius_keeps_its_horizontal_spread_across_common_aspect_ratios() {
-        let stage_radius = atmosphere_source_radius(790.0, 1_150.0, 0.48);
-        let window_radius = atmosphere_source_radius(1_792.0, 1_440.0, 0.48);
+    fn ambient_radius_keeps_its_horizontal_spread_across_common_aspect_ratios() {
+        let stage_radius = light_source_radius(790.0, 1_150.0, 0.48);
+        let window_radius = light_source_radius(1_792.0, 1_440.0, 0.48);
         assert!((stage_radius / 790.0 - 0.48).abs() < f32::EPSILON);
         assert!((window_radius / 1_792.0 - 0.48).abs() < f32::EPSILON);
 
-        let ultrawide_radius = atmosphere_source_radius(2_560.0, 1_080.0, 0.48);
+        let ultrawide_radius = light_source_radius(2_560.0, 1_080.0, 0.48);
         assert!((ultrawide_radius - 1_080.0 * 1.7 * 0.48).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn atmosphere_normalization_preserves_off_window_sources_and_caps_cost() {
-        let mut source = AtmosphereSource {
+    fn ambient_normalization_preserves_off_window_sources_and_caps_cost() {
+        let mut source = LightSource {
             x: -1.25,
             y: 1.4,
             radius: f32::INFINITY,
@@ -2263,21 +2846,21 @@ mod tests {
             drift: 0.8,
             audio_intensity: 8.0,
             audio_scale: -4.0,
-            ..AtmosphereSource::default()
+            ..LightSource::default()
         };
-        let mut atmosphere = Atmosphere {
-            sources: vec![source.clone(); MAX_ATMOSPHERE_SOURCES + 2],
-            ..Atmosphere::default()
+        let mut ambient = AmbientLayer {
+            sources: vec![source.clone(); MAX_LIGHT_SOURCES + 2],
+            ..AmbientLayer::default()
         }
         .normalized();
 
-        assert_eq!(atmosphere.sources.len(), MAX_ATMOSPHERE_SOURCES);
-        source = atmosphere.sources.remove(0);
+        assert_eq!(ambient.sources.len(), MAX_LIGHT_SOURCES);
+        source = ambient.sources.remove(0);
         assert!((source.x + 1.25).abs() < f32::EPSILON);
         assert!((source.y - 1.4).abs() < f32::EPSILON);
-        assert!((source.radius - AtmosphereSource::default().radius).abs() < f32::EPSILON);
+        assert!((source.radius - LightSource::default().radius).abs() < f32::EPSILON);
         assert!((source.aspect - 4.0).abs() < f32::EPSILON);
-        assert!((source.rotation - AtmosphereSource::default().rotation).abs() < f32::EPSILON);
+        assert!((source.rotation - LightSource::default().rotation).abs() < f32::EPSILON);
         assert!((source.intensity - 2.0).abs() < f32::EPSILON);
         assert!((source.hue - 0.8).abs() < f32::EPSILON);
         assert!((source.saturation - 1.0).abs() < f32::EPSILON);
@@ -2287,7 +2870,7 @@ mod tests {
     }
 
     #[test]
-    fn atmosphere_audio_response_is_per_source_and_bounded() {
+    fn ambient_audio_response_is_per_source_and_bounded() {
         let features = AudioFeatures {
             energy: 0.62,
             bass: 0.81,
@@ -2297,33 +2880,27 @@ mod tests {
             ..AudioFeatures::default()
         };
 
+        assert!(light_audio_drive(&features, LightAudioResponse::None).abs() < f32::EPSILON);
         assert!(
-            atmosphere_audio_drive(&features, AtmosphereAudioResponse::None).abs() < f32::EPSILON
-        );
-        assert!(
-            (atmosphere_audio_drive(&features, AtmosphereAudioResponse::Energy) - 0.62).abs()
+            (light_audio_drive(&features, LightAudioResponse::Energy) - 0.62).abs()
                 < f32::EPSILON
         );
         assert!(
-            (atmosphere_audio_drive(&features, AtmosphereAudioResponse::Bass) - 0.81).abs()
-                < f32::EPSILON
+            (light_audio_drive(&features, LightAudioResponse::Bass) - 0.81).abs() < f32::EPSILON
         );
         assert!(
-            (atmosphere_audio_drive(&features, AtmosphereAudioResponse::Mid) - 0.47).abs()
-                < f32::EPSILON
+            (light_audio_drive(&features, LightAudioResponse::Mid) - 0.47).abs() < f32::EPSILON
         );
         assert!(
-            (atmosphere_audio_drive(&features, AtmosphereAudioResponse::Treble) - 1.0).abs()
+            (light_audio_drive(&features, LightAudioResponse::Treble) - 1.0).abs()
                 < f32::EPSILON
         );
-        assert!(
-            atmosphere_audio_drive(&features, AtmosphereAudioResponse::Onset).abs() < f32::EPSILON
-        );
+        assert!(light_audio_drive(&features, LightAudioResponse::Onset).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn off_window_atmosphere_source_contributes_only_its_visible_tail() {
-        fn render(atmosphere: Atmosphere) -> Vec<u8> {
+    fn off_window_light_source_contributes_only_its_visible_tail() {
+        fn render(ambient: AmbientLayer) -> Vec<u8> {
             let canvas = Canvas::new_cpu(180, 120, 1.0).expect("CPU canvas");
             canvas
                 .begin_cpu(Some(rgba(0, 0, 0, 255)))
@@ -2331,7 +2908,7 @@ mod tests {
             let state = VisualState {
                 width: 180.0,
                 height: 120.0,
-                atmosphere: Arc::new(atmosphere),
+                ambient: Arc::new(ambient),
                 ..VisualState::default()
             };
             draw_backdrop(&canvas, &state, PRESETS[0]);
@@ -2340,29 +2917,29 @@ mod tests {
             pixels.to_vec()
         }
 
-        let dark = render(Atmosphere {
+        let dark = render(AmbientLayer {
             sources: Vec::new(),
-            ..Atmosphere::default()
+            ..AmbientLayer::default()
         });
-        let lit = render(Atmosphere {
-            sources: vec![AtmosphereSource {
+        let lit = render(AmbientLayer {
+            sources: vec![LightSource {
                 x: -0.18,
                 y: 0.5,
                 radius: 0.55,
                 intensity: 1.5,
-                palette: AtmospherePalette::Custom,
+                palette: LightPalette::Custom,
                 hue: 0.55,
-                ..AtmosphereSource::default()
+                ..LightSource::default()
             }],
-            ..Atmosphere::default()
+            ..AmbientLayer::default()
         });
 
         assert_ne!(dark, lit);
     }
 
     #[test]
-    fn atmosphere_shapes_and_rotation_produce_distinct_footprints() {
-        fn render(shape: AtmosphereSourceShape, rotation: f32) -> Vec<u8> {
+    fn ambient_shapes_and_rotation_produce_distinct_footprints() {
+        fn render(shape: LightSourceShape, rotation: f32) -> Vec<u8> {
             let canvas = Canvas::new_cpu(180, 120, 1.0).expect("CPU canvas");
             canvas
                 .begin_cpu(Some(rgba(0, 0, 0, 255)))
@@ -2370,8 +2947,8 @@ mod tests {
             let state = VisualState {
                 width: 180.0,
                 height: 120.0,
-                atmosphere: Arc::new(Atmosphere {
-                    sources: vec![AtmosphereSource {
+                ambient: Arc::new(AmbientLayer {
+                    sources: vec![LightSource {
                         x: 0.5,
                         y: 0.5,
                         radius: 0.22,
@@ -2379,12 +2956,12 @@ mod tests {
                         aspect: 2.8,
                         rotation,
                         intensity: 1.6,
-                        palette: AtmospherePalette::Custom,
+                        palette: LightPalette::Custom,
                         hue: 0.58,
-                        audio_response: AtmosphereAudioResponse::None,
-                        ..AtmosphereSource::default()
+                        audio_response: LightAudioResponse::None,
+                        ..LightSource::default()
                     }],
-                    ..Atmosphere::default()
+                    ..AmbientLayer::default()
                 }),
                 ..VisualState::default()
             };
@@ -2394,10 +2971,10 @@ mod tests {
             pixels.to_vec()
         }
 
-        let circle = render(AtmosphereSourceShape::Circle, 0.0);
-        let oval = render(AtmosphereSourceShape::Oval, 0.0);
-        let vertical_oval = render(AtmosphereSourceShape::Oval, 0.25);
-        let beam = render(AtmosphereSourceShape::Beam, 0.0);
+        let circle = render(LightSourceShape::Circle, 0.0);
+        let oval = render(LightSourceShape::Oval, 0.0);
+        let vertical_oval = render(LightSourceShape::Oval, 0.25);
+        let beam = render(LightSourceShape::Beam, 0.0);
 
         assert_ne!(circle, oval);
         assert_ne!(oval, vertical_oval);
@@ -2405,7 +2982,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_composition_leaves_custom_atmosphere_independent_of_preset() {
+    fn disabled_subject_leaves_custom_ambient_independent_of_subject_effect() {
         fn render(preset: usize) -> Vec<u8> {
             let canvas = Canvas::new_cpu(180, 120, 1.0).expect("CPU canvas");
             canvas
@@ -2415,14 +2992,14 @@ mod tests {
                 width: 180.0,
                 height: 120.0,
                 preset,
-                atmosphere: Arc::new(Atmosphere {
-                    composition_visible: false,
-                    sources: vec![AtmosphereSource {
-                        palette: AtmospherePalette::Custom,
+                subject_enabled: false,
+                ambient: Arc::new(AmbientLayer {
+                    sources: vec![LightSource {
+                        palette: LightPalette::Custom,
                         hue: 0.12,
-                        ..AtmosphereSource::default()
+                        ..LightSource::default()
                     }],
-                    ..Atmosphere::default()
+                    ..AmbientLayer::default()
                 }),
                 ..VisualState::default()
             };
@@ -2436,21 +3013,72 @@ mod tests {
     }
 
     #[test]
+    fn subject_and_ambient_layers_can_be_disabled_independently() {
+        fn render(subject_enabled: bool, light_enabled: bool) -> Vec<u8> {
+            let canvas = Canvas::new_cpu(180, 120, 1.0).expect("CPU canvas");
+            canvas
+                .begin_cpu(Some(rgba(0, 0, 0, 255)))
+                .expect("begin frame");
+            let state = VisualState {
+                width: 180.0,
+                height: 120.0,
+                elapsed: 2.6,
+                subject_enabled,
+                preset: 6,
+                features: AudioFeatures {
+                    energy: 0.72,
+                    bass: 0.63,
+                    mid: 0.48,
+                    treble: 0.57,
+                    spectrum: [0.44; SPECTRUM_BANDS],
+                    ..AudioFeatures::default()
+                },
+                ambient: Arc::new(AmbientLayer {
+                    enabled: light_enabled,
+                    sources: vec![LightSource {
+                        palette: LightPalette::Custom,
+                        hue: 0.15,
+                        audio_response: LightAudioResponse::None,
+                        ..LightSource::default()
+                    }],
+                    ..AmbientLayer::default()
+                }),
+                ..VisualState::default()
+            };
+            draw_stage(&canvas, &state, PRESETS[state.preset]);
+            canvas.end();
+            let (_, _, _, pixels) = canvas.read_pixels().expect("CPU pixels");
+            pixels.to_vec()
+        }
+
+        let base = render(false, false);
+        let subject_only = render(true, false);
+        let ambient_only = render(false, true);
+        let both = render(true, true);
+
+        assert_ne!(base, subject_only);
+        assert_ne!(base, ambient_only);
+        assert_ne!(subject_only, ambient_only);
+        assert_ne!(both, subject_only);
+        assert_ne!(both, ambient_only);
+    }
+
+    #[test]
     fn hsl_conversion_has_stable_primary_colours() {
         assert_eq!(hsl_to_rgb(0.0, 1.0, 0.5), [255, 0, 0]);
         assert_eq!(hsl_to_rgb(1.0 / 3.0, 1.0, 0.5), [0, 255, 0]);
         assert_eq!(hsl_to_rgb(2.0 / 3.0, 1.0, 0.5), [0, 0, 255]);
     }
 
-    fn material_key(kind: AtmosphereFieldKind) -> MaterialTextureKey {
+    fn material_key(kind: LightMaterialKind) -> MaterialTextureKey {
         MaterialTextureKey {
             width: 96,
             height: 64,
-            field: AtmosphereField {
+            field: LightMaterial {
                 kind,
-                ..AtmosphereField::default()
+                ..LightMaterial::default()
             },
-            anchors: Atmosphere::default()
+            anchors: AmbientLayer::default()
                 .sources
                 .iter()
                 .map(MaterialAnchor::from)
@@ -2465,26 +3093,33 @@ mod tests {
         assert_eq!(material_texture_dimensions(2_560.0, 1_080.0), (512, 224));
         assert_eq!(material_texture_dimensions(800.0, 1_200.0), (341, 512));
 
-        let watercolor_key = material_key(AtmosphereFieldKind::Watercolor);
-        let caustics_key = material_key(AtmosphereFieldKind::Caustics);
+        let watercolor_key = material_key(LightMaterialKind::Watercolor);
+        let caustics_key = material_key(LightMaterialKind::Caustics);
+        let aurora_key = material_key(LightMaterialKind::Aurora);
+        let nebula_key = material_key(LightMaterialKind::Nebula);
         let watercolor = generate_material_texture(&watercolor_key);
         let repeated = generate_material_texture(&watercolor_key);
         let caustics = generate_material_texture(&caustics_key);
+        let aurora = generate_material_texture(&aurora_key);
+        let nebula = generate_material_texture(&nebula_key);
 
         assert_eq!(watercolor, repeated);
         assert_ne!(watercolor, caustics);
-        assert!(watercolor.chunks_exact(4).any(|pixel| pixel[3] > 0));
-        assert!(caustics.chunks_exact(4).any(|pixel| pixel[3] > 0));
-        for pixel in watercolor.chunks_exact(4).chain(caustics.chunks_exact(4)) {
-            assert!(pixel[0] <= pixel[3]);
-            assert!(pixel[1] <= pixel[3]);
-            assert!(pixel[2] <= pixel[3]);
+        assert_ne!(caustics, aurora);
+        assert_ne!(aurora, nebula);
+        for material in [&watercolor, &caustics, &aurora, &nebula] {
+            assert!(material.chunks_exact(4).any(|pixel| pixel[3] > 0));
+            for pixel in material.chunks_exact(4) {
+                assert!(pixel[0] <= pixel[3]);
+                assert!(pixel[1] <= pixel[3]);
+                assert!(pixel[2] <= pixel[3]);
+            }
         }
     }
 
     #[test]
     fn material_configuration_changes_regenerate_the_field() {
-        let first = material_key(AtmosphereFieldKind::Watercolor);
+        let first = material_key(LightMaterialKind::Watercolor);
         let mut changed_seed = first.clone();
         changed_seed.field.seed ^= 0xFFFF_0000;
         let mut moved_source = first.clone();
@@ -2502,18 +3137,18 @@ mod tests {
 
     #[test]
     fn material_settings_are_normalized_to_safe_ranges() {
-        let normalized = AtmosphereField {
+        let normalized = LightMaterial {
             intensity: 9.0,
             scale: 0.0,
             motion: f32::INFINITY,
             hue: -0.25,
             saturation: 3.0,
-            ..AtmosphereField::default()
+            ..LightMaterial::default()
         }
         .normalized();
         assert!((normalized.intensity - 1.5).abs() < f32::EPSILON);
         assert!((normalized.scale - 0.45).abs() < f32::EPSILON);
-        assert!((normalized.motion - AtmosphereField::default().motion).abs() < f32::EPSILON);
+        assert!((normalized.motion - LightMaterial::default().motion).abs() < f32::EPSILON);
         assert!((normalized.hue - 0.75).abs() < f32::EPSILON);
         assert!((normalized.saturation - 1.0).abs() < f32::EPSILON);
     }
@@ -2552,23 +3187,23 @@ mod tests {
         state.transition = 0.0;
         assert!(!state.needs_animation_frame());
 
-        state.atmosphere = Arc::new(Atmosphere {
-            sources: vec![AtmosphereSource {
+        state.ambient = Arc::new(AmbientLayer {
+            sources: vec![LightSource {
                 drift: 0.02,
-                ..AtmosphereSource::default()
+                ..LightSource::default()
             }],
-            ..Atmosphere::default()
+            ..AmbientLayer::default()
         });
         assert!(state.needs_animation_frame());
 
-        state.atmosphere = Arc::new(Atmosphere {
-            field: AtmosphereField {
-                kind: AtmosphereFieldKind::Caustics,
+        state.ambient = Arc::new(AmbientLayer {
+            field: LightMaterial {
+                kind: LightMaterialKind::Caustics,
                 motion: 0.4,
-                ..AtmosphereField::default()
+                ..LightMaterial::default()
             },
             sources: Vec::new(),
-            ..Atmosphere::default()
+            ..AmbientLayer::default()
         });
         assert!(state.needs_animation_frame());
     }

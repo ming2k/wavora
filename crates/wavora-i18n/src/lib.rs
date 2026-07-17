@@ -87,10 +87,14 @@ pub enum Key {
     VisualFootnote,
     VisualPreview,
     VisualControls,
-    VisualPresets,
-    Composition,
-    ResponseTuning,
-    SceneLayers,
+    Subject,
+    Ambient,
+    SubjectEffects,
+    SubjectEffect,
+    SubjectEnabled,
+    SubjectResponse,
+    AmbientLayer,
+    AmbientEnabled,
     Material,
     Placement,
     Appearance,
@@ -106,13 +110,12 @@ pub enum Key {
     Motion,
     Depth,
     Glow,
-    Atmosphere,
-    AtmosphereEnabled,
-    CompositionVisible,
     MaterialField,
     NoMaterial,
     Watercolor,
     Caustics,
+    Aurora,
+    Nebula,
     TextureScale,
     FieldMotion,
     NewVariation,
@@ -121,7 +124,7 @@ pub enum Key {
     AddLight,
     RemoveLight,
     Palette,
-    FollowPreset,
+    FollowSubject,
     CustomColor,
     SourceShape,
     Circle,
@@ -148,7 +151,7 @@ pub enum Key {
     Treble,
     ScaleResponse,
     StrengthResponse,
-    AtmosphereHint,
+    AmbientHint,
     SettingsDescription,
     DefaultVolume,
     Language,
@@ -247,17 +250,21 @@ const fn english(key: Key) -> &'static str {
         Key::Album => "Album",
         Key::Duration => "Time",
         Key::VisualDescription => {
-            "Six independent compositions turn frequency, pitch, loudness and transients into motion."
+            "Eleven subject effects turn frequency, pitch, loudness and transients into motion."
         }
         Key::VisualFootnote => {
             "Driven by 32-band PCM analysis, bass/mid/treble, dBFS loudness, pitch, centroid and onset."
         }
         Key::VisualPreview => "AUDIO-REACTIVE STAGE",
         Key::VisualControls => "Visual controls",
-        Key::VisualPresets => "Compositions",
-        Key::Composition => "Composition",
-        Key::ResponseTuning => "Composition response",
-        Key::SceneLayers => "Scene layers",
+        Key::Subject => "Subject",
+        Key::Ambient => "Ambient",
+        Key::SubjectEffects => "Subject layer",
+        Key::SubjectEffect => "Subject effect",
+        Key::SubjectEnabled => "Subject enabled",
+        Key::SubjectResponse => "Subject response",
+        Key::AmbientLayer => "Ambient layer",
+        Key::AmbientEnabled => "Ambient light enabled",
         Key::Material => "Material",
         Key::Placement => "Placement and size",
         Key::Appearance => "Appearance",
@@ -273,13 +280,12 @@ const fn english(key: Key) -> &'static str {
         Key::Motion => "Motion",
         Key::Depth => "Depth",
         Key::Glow => "Glow",
-        Key::Atmosphere => "Atmosphere",
-        Key::AtmosphereEnabled => "Atmosphere enabled",
-        Key::CompositionVisible => "Composition visible",
         Key::MaterialField => "Material field",
         Key::NoMaterial => "None",
         Key::Watercolor => "Watercolour diffusion",
         Key::Caustics => "Water caustics",
+        Key::Aurora => "Aurora curtains",
+        Key::Nebula => "Nebula clouds",
         Key::TextureScale => "Material scale",
         Key::FieldMotion => "Material drift",
         Key::NewVariation => "New material variation",
@@ -288,7 +294,7 @@ const fn english(key: Key) -> &'static str {
         Key::AddLight => "+ Add light",
         Key::RemoveLight => "Remove light",
         Key::Palette => "Colour source",
-        Key::FollowPreset => "Follow composition",
+        Key::FollowSubject => "Follow subject effect",
         Key::CustomColor => "Custom colour",
         Key::SourceShape => "Source shape",
         Key::Circle => "Circle",
@@ -315,8 +321,8 @@ const fn english(key: Key) -> &'static str {
         Key::Treble => "Treble",
         Key::ScaleResponse => "Audio size",
         Key::StrengthResponse => "Audio brightness",
-        Key::AtmosphereHint => {
-            "Positions may extend beyond the window; only the light tail remains visible."
+        Key::AmbientHint => {
+            "Ambient light is independent from the subject; the subject's own glow is controlled in the Subject tab. Sources may extend beyond the window so only their soft tail remains visible."
         }
         Key::SettingsDescription => "Playback and visual preferences are stored locally.",
         Key::DefaultVolume => "Default volume",
@@ -405,16 +411,20 @@ const fn chinese(key: Key) -> &'static str {
         Key::Artist => "艺人",
         Key::Album => "专辑",
         Key::Duration => "时长",
-        Key::VisualDescription => "六种独立构图，把频率、音高、响度和瞬态变成不同的空间运动。",
+        Key::VisualDescription => "十一种主体效果，把频率、音高、响度和瞬态变成不同的空间运动。",
         Key::VisualFootnote => {
             "由 32 段 PCM 频谱、低中高频、dBFS 响度、音高、频谱质心与瞬态共同驱动。"
         }
         Key::VisualPreview => "音频响应舞台",
         Key::VisualControls => "视觉控制",
-        Key::VisualPresets => "构图预设",
-        Key::Composition => "构图",
-        Key::ResponseTuning => "构图响应",
-        Key::SceneLayers => "场景图层",
+        Key::Subject => "主体",
+        Key::Ambient => "环境光",
+        Key::SubjectEffects => "主体图层",
+        Key::SubjectEffect => "主体效果",
+        Key::SubjectEnabled => "启用主体",
+        Key::SubjectResponse => "主体响应",
+        Key::AmbientLayer => "环境光图层",
+        Key::AmbientEnabled => "启用环境光",
         Key::Material => "材质",
         Key::Placement => "位置与尺寸",
         Key::Appearance => "外观",
@@ -430,13 +440,12 @@ const fn chinese(key: Key) -> &'static str {
         Key::Motion => "运动速率",
         Key::Depth => "空间纵深",
         Key::Glow => "辉光",
-        Key::Atmosphere => "氛围层",
-        Key::AtmosphereEnabled => "启用氛围层",
-        Key::CompositionVisible => "显示主体构图",
         Key::MaterialField => "氛围材质",
         Key::NoMaterial => "无",
         Key::Watercolor => "水彩浸染",
         Key::Caustics => "水面焦散",
+        Key::Aurora => "极光帷幕",
+        Key::Nebula => "星云雾气",
         Key::TextureScale => "材质尺度",
         Key::FieldMotion => "材质漂移",
         Key::NewVariation => "生成新的材质变化",
@@ -444,7 +453,7 @@ const fn chinese(key: Key) -> &'static str {
         Key::AddLight => "＋ 添加光源",
         Key::RemoveLight => "移除光源",
         Key::Palette => "颜色来源",
-        Key::FollowPreset => "跟随构图配色",
+        Key::FollowSubject => "跟随主体配色",
         Key::CustomColor => "自定义颜色",
         Key::SourceShape => "光源形状",
         Key::Circle => "圆形",
@@ -471,7 +480,7 @@ const fn chinese(key: Key) -> &'static str {
         Key::Treble => "高频",
         Key::ScaleResponse => "音频尺寸响应",
         Key::StrengthResponse => "音频亮度响应",
-        Key::AtmosphereHint => "位置可以超出窗口边界，只让光晕尾部进入画面。",
+        Key::AmbientHint => "环境光与主体相互独立，主体自身的辉光由“主体”页控制。光源可以放在窗口外，只让柔和的光晕尾部进入画面。",
         Key::SettingsDescription => "播放与视觉偏好只保存在本机。",
         Key::DefaultVolume => "默认音量",
         Key::Language => "语言",
@@ -525,7 +534,7 @@ const fn chinese(key: Key) -> &'static str {
     }
 }
 
-/// Localized display copy for a built-in visual composition.
+/// Localized display copy for a built-in subject effect.
 ///
 /// Visual rendering deliberately stays language-neutral; UI copy lives here
 /// so switching languages never leaves a half-translated preset row behind.
@@ -537,6 +546,7 @@ pub struct VisualPresetText {
 }
 
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub const fn visual_preset_text(language: Language, index: usize) -> VisualPresetText {
     match language {
         Language::English => match index {
@@ -565,10 +575,35 @@ pub const fn visual_preset_text(language: Language, index: usize) -> VisualPrese
                 subtitle: "Loudness etched into grooves",
                 response: "Loudness · bass · spectrum",
             },
-            _ => VisualPresetText {
+            5 => VisualPresetText {
                 name: "Star River",
                 subtitle: "A three-band flow field",
                 response: "Bass · mids · treble",
+            },
+            6 => VisualPresetText {
+                name: "Prism Ribbons",
+                subtitle: "Layered spectrum ribbons in depth",
+                response: "Spectrum · energy · centroid",
+            },
+            7 => VisualPresetText {
+                name: "Luminous Bloom",
+                subtitle: "A radial flower of sound",
+                response: "Spectrum · pitch · transients",
+            },
+            8 => VisualPresetText {
+                name: "Ripple Field",
+                subtitle: "A point surface carrying concentric waves",
+                response: "Spectrum · transients · energy",
+            },
+            9 => VisualPresetText {
+                name: "Particle Terrain",
+                subtitle: "A glowing landscape of travelling ridges",
+                response: "Spectrum · bass · energy",
+            },
+            _ => VisualPresetText {
+                name: "Cover Relief",
+                subtitle: "Album artwork fragmented across rising columns",
+                response: "Artwork · spectrum · bass · transients",
             },
         },
         Language::SimplifiedChinese => match index {
@@ -597,10 +632,35 @@ pub const fn visual_preset_text(language: Language, index: usize) -> VisualPrese
                 subtitle: "把响度刻进声槽",
                 response: "响度 · 低频 · 频谱",
             },
-            _ => VisualPresetText {
+            5 => VisualPresetText {
                 name: "星河",
                 subtitle: "三频交织的流场",
                 response: "低频 · 中频 · 高频",
+            },
+            6 => VisualPresetText {
+                name: "棱镜飘带",
+                subtitle: "层叠在纵深中的频谱飘带",
+                response: "频谱 · 能量 · 频谱质心",
+            },
+            7 => VisualPresetText {
+                name: "流光花",
+                subtitle: "由声音绽放的径向花朵",
+                response: "频谱 · 音高 · 瞬态",
+            },
+            8 => VisualPresetText {
+                name: "涟漪场",
+                subtitle: "同心波掠过粒子曲面",
+                response: "频谱 · 瞬态 · 能量",
+            },
+            9 => VisualPresetText {
+                name: "粒子地形",
+                subtitle: "发光山脊持续穿行",
+                response: "频谱 · 低频 · 能量",
+            },
+            _ => VisualPresetText {
+                name: "封面浮雕",
+                subtitle: "完整封面分散投影在起伏柱阵上",
+                response: "封面 · 频谱 · 低频 · 瞬态",
             },
         },
     }
@@ -632,7 +692,7 @@ mod tests {
 
     #[test]
     fn visual_presets_are_fully_localized() {
-        for index in 0..6 {
+        for index in 0..11 {
             let english = visual_preset_text(Language::English, index);
             assert!(
                 !english
