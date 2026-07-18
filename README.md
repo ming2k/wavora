@@ -16,7 +16,7 @@ Current product direction:
 - Local-first, with no dependency on online music accounts or proprietary
   music-source APIs
 - A dark, restrained music stage with a strong sense of spatial depth
-- Eleven modular subject effects plus independent lighting materials and
+- Eleven modular subject effects plus independent ambient materials and
   sources, driven by a 32-band spectrum, pitch, loudness, low/mid/high bands,
   transients, and current-track artwork
 - Separate playback, media-scanning, and rendering paths to avoid blocking UI
@@ -99,7 +99,7 @@ The workspace is divided by responsibility into `wavora-core` (domain model),
 `wavora-audio-analysis` (pure PCM feature extraction), `wavora-i18n` (language
 resolution and localized copy), `wavora-library` (durable identity and
 playlists), `wavora-media` (scanning, decoding, and output), `wavora-visuals`
-(subject and lighting modules, response envelopes, transitions, and Flux
+(subject and ambient modules, response envelopes, transitions, and Flux
 drawing), and the root
 application (state, persistence, and Optics UI). See
 [System Architecture](docs/explanation/system-architecture.md),

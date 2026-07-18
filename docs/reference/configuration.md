@@ -20,7 +20,7 @@ updates the preference automatically.
 ## Visual stage
 
 The stage persists two independent modules. `subject` selects and tunes the
-attention-carrying effect; `lighting` owns its procedural material and light
+attention-carrying effect; `ambient` owns its procedural material and light
 sources. Either `enabled` value can change without resetting the other module.
 
 ```json
@@ -36,7 +36,7 @@ sources. Either `enabled` value can change without resetting the other module.
         "glow": 0.9
       }
     },
-    "lighting": {
+    "ambient": {
       "enabled": true,
       "field": {
         "kind": "none"

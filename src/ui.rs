@@ -1329,11 +1329,18 @@ fn visuals(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: 
             },
             |frame| {
                 visual_stage(app, frame, stage_width, inner_height, language);
-                visual_controls(app, frame, VISUAL_INSPECTOR_WIDTH, language);
+                visual_controls(app, frame, VISUAL_INSPECTOR_WIDTH, None, language);
             },
         );
     } else {
         let stage_height = stacked_visual_stage_height(inner_height);
+        /* The stage stays pinned: its GPU surface is painted at a fixed
+         * rect and cannot follow scrolled content. The controls card below
+         * becomes the scroll content of a region filling the leftover
+         * height, floored at that viewport height, so short content still
+         * fills the space and tall content scrolls the whole card instead
+         * of squeezing a tiny inner scroll port. */
+        let controls_viewport = (inner_height - stage_height - VISUAL_STAGE_GAP).max(1.0);
         frame.column_ex(
             &LayoutOpts {
                 flex: 1.0,
@@ -1343,7 +1350,10 @@ fn visuals(app: &mut App, frame: &mut Frame, width: f32, height: f32, language: 
             },
             |frame| {
                 visual_stage(app, frame, inner_width, stage_height, language);
-                visual_controls(app, frame, inner_width, language);
+                frame.flex(1.0);
+                frame.scroll("visuals-controls-scroll", |frame| {
+                    visual_controls(app, frame, inner_width, Some(controls_viewport), language);
+                });
             },
         );
     }
@@ -1604,11 +1614,29 @@ fn metric_alpha(value: f32) -> u8 {
     value.clamp(0.0, 255.0).round() as u8
 }
 
-fn visual_controls(app: &mut App, frame: &mut Frame, width: f32, language: Language) {
+/// `scrolled_min_height` — `Some(viewport)` when the card itself is the
+/// content of a surrounding scroll region (stacked layout). The card must
+/// then stay intrinsically sized (`flex: 0`: lens shrinks flex children of
+/// a scroll port back to the viewport, silently killing scrolling) and use
+/// the viewport as a min-height floor so short content still fills it.
+/// `None` pins the card to the column height and scrolls its tab content
+/// inside the card (side layout).
+fn visual_controls(
+    app: &mut App,
+    frame: &mut Frame,
+    width: f32,
+    scrolled_min_height: Option<f32>,
+    language: Language,
+) {
     frame.column_ex(
         &LayoutOpts {
-            flex: 1.0,
+            flex: if scrolled_min_height.is_some() {
+                0.0
+            } else {
+                1.0
+            },
             width,
+            min_height: scrolled_min_height.unwrap_or(0.0),
             gap: 10.0,
             pad: 14.0,
             cross: Align::Stretch,
@@ -1640,17 +1668,28 @@ fn visual_controls(app: &mut App, frame: &mut Frame, width: f32, language: Langu
             } else {
                 VisualInspectorTab::Subject
             };
-            frame.flex(1.0);
-            match app.visual_inspector_tab {
-                VisualInspectorTab::Subject => {
-                    frame.scroll("visual-subject-scroll", |frame| {
+            if scrolled_min_height.is_some() {
+                match app.visual_inspector_tab {
+                    VisualInspectorTab::Subject => {
                         subject_controls(app, frame, width, language);
-                    });
-                }
-                VisualInspectorTab::Ambient => {
-                    frame.scroll("visual-ambient-scroll", |frame| {
+                    }
+                    VisualInspectorTab::Ambient => {
                         ambient_controls(app, frame, width, language);
-                    });
+                    }
+                }
+            } else {
+                frame.flex(1.0);
+                match app.visual_inspector_tab {
+                    VisualInspectorTab::Subject => {
+                        frame.scroll("visual-subject-scroll", |frame| {
+                            subject_controls(app, frame, width, language);
+                        });
+                    }
+                    VisualInspectorTab::Ambient => {
+                        frame.scroll("visual-ambient-scroll", |frame| {
+                            ambient_controls(app, frame, width, language);
+                        });
+                    }
                 }
             }
         },

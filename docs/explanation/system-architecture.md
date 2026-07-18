@@ -82,7 +82,7 @@ match is unambiguous.
 ## Rendering and Interface
 
 The application publishes a lightweight visual snapshot containing audio
-features, subject/lighting state, tuning, artwork handle, and the logical-pixel stage viewport. The Flux
+features, subject/ambient state, tuning, artwork handle, and the logical-pixel stage viewport. The Flux
 paint callback reads only that snapshot, so it does not lock application state
 while drawing.
 

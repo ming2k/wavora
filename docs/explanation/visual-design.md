@@ -19,16 +19,16 @@ without making routine playback harder to operate.
 
 The Visual Stage follows an editor layout rather than a long settings form. A
 minimum-width preview remains the primary surface, while a tabbed inspector
-separates subject decisions from lighting construction. Inspector cards
+separates subject decisions from ambient construction. Inspector cards
 group settings by responsibility, and the tab bar stays visible while its
 content scrolls. When the window cannot preserve a useful preview width, the
 inspector stacks below the preview instead of compressing both columns. The
 stacked preview uses a compact information density rather than allowing desktop
 cards to overflow a shorter stage. Inspector and popup surfaces remain opaque;
-the lighting field is visible around the editing surfaces, never through their
+the ambient field is visible around the editing surfaces, never through their
 content.
 
-The enabled subject and lighting modules render behind every content page. The
+The enabled subject and ambient modules render behind every content page. The
 visual page moves the same renderer into a
 bounded viewport beside a dense control rail; it does not replace the scene
 with a separate ambient interpretation. Palette, animation phase, tuning,
@@ -37,14 +37,14 @@ navigation. Stage geometry uses local coordinates and cannot draw outside its
 viewport. Content pages preserve readability through UI-owned translucent
 surfaces rather than a second, independently maintained background renderer.
 
-## Subject and Lighting Modules
+## Subject and Ambient Modules
 
-Subject is the attention-carrying effect; Lighting is the environment beneath
+Subject is the attention-carrying effect; Ambient light is the environment beneath
 it. The modules have independent enable state. Changing or disabling the
 subject does not reset light placement, motion, falloff, or custom color. A
 source can follow the subject palette when a coordinated result is preferred.
-Disabling the subject leaves a lighting-only listening space, while disabling
-lighting preserves a clean subject on the dark base.
+Disabling the subject leaves an ambient-only listening space, while disabling
+ambient light preserves a clean subject on the dark base.
 
 Sources use normalized window coordinates. The visible window occupies
 `0..=1` on each axis, but source positions may extend beyond that range. This

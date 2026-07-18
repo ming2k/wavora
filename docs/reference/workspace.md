@@ -34,7 +34,7 @@ domain and analysis crates do not depend on the UI stack.
 | `wavora-library` | SQLite catalog, media identity, favorites, history, missing-file records, and playlists |
 | `wavora-media` | File URIs, asynchronous scanning, decoding, bounded lyrics sidecar loading, analysis scheduling, and native output |
 | `wavora-ui` | Wavora design tokens, theme recipes, and composable product-level Iris components; it contains no application or media state |
-| `wavora-visuals` | Subject/lighting modules, response envelopes, effect transitions, and Flux drawing |
+| `wavora-visuals` | Subject/ambient modules, response envelopes, effect transitions, and Flux drawing |
 
 ## Runtime Boundaries
 
@@ -91,6 +91,6 @@ and translate component results into domain actions.
 ## Localization Boundary
 
 Interface strings are resolved through `wavora-i18n::Key` or
-`visual_preset_text`. The visual-rendering crate stores subject/lighting types
+`visual_preset_text`. The visual-rendering crate stores subject/ambient types
 and palettes but no user-facing copy. The default language preference is `System`,
 which resolves the system locale at startup.

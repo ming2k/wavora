@@ -9,7 +9,7 @@ interfaces, stored data, and runtime behavior.
   sidecar format and links its JSON Schema.
 - [Track Identity Reference](track-identity.md) lists track reconciliation,
   persistence, duplicate, and playback rules.
-- [Visual Reference](visuals.md) lists built-in subject effects, lighting modules, tuning ranges,
+- [Visual Reference](visuals.md) lists built-in subject effects, ambient modules, tuning ranges,
   and shared rendering behavior.
 - [Workspace Reference](workspace.md) lists crate responsibilities, dependency
   direction, and runtime boundaries.

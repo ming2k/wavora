@@ -26,7 +26,7 @@ playlists, playback history, and audio-driven visuals.
   local-lyrics sidecars and validation rules.
 - [Track Identity Reference](reference/track-identity.md) lists the exact
   scanner, reconciliation, persistence, and playback behavior.
-- [Visual Reference](reference/visuals.md) lists subject effects, lighting modules, tuning ranges,
+- [Visual Reference](reference/visuals.md) lists subject effects, ambient modules, tuning ranges,
   and rendering behavior.
 - [Workspace Reference](reference/workspace.md) lists crate responsibilities,
   dependency direction, and runtime boundaries.

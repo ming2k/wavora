@@ -1,6 +1,6 @@
 # Visual Reference
 
-This page lists the built-in subject effects, lighting modules, tuning values,
+This page lists the built-in subject effects, ambient modules, tuning values,
 and shared visual behavior. For the design principles behind the stage, use
 [Visual Design](../explanation/visual-design.md).
 
@@ -10,14 +10,14 @@ and shared visual behavior. For the design principles behind the stage, use
 |----------|---------------------------|
 | Base background | Near-black `#030508` |
 | Layout | Main visual stage with a 304 px tabbed inspector when at least 480 px remains for the stage; stacked otherwise, with a compact preview density below 340 px stage height |
-| Content-page background | Enabled subject and lighting layers in window coordinates |
-| Visual-page shell | Low-detail lighting field outside the clipped stage |
+| Content-page background | Enabled subject and ambient layers in window coordinates |
+| Visual-page shell | Low-detail ambient field outside the clipped stage |
 | Coordinate system | Full-window logical pixels on content pages; local logical pixels in the stage |
 | View continuity | The same renderer, palette, animation phase, tuning, and audio state persist across views |
-| Subject | Independent primary effect layer; may be disabled without changing lighting |
-| Lighting | Independent procedural material and up to four composable sources; may be disabled without changing the subject |
-| Lighting coordinates | Normalized window coordinates; values outside `0..=1` place centers beyond the window |
-| Effect switching | Preserves playback state, lighting configuration, information architecture, and control positions |
+| Subject | Independent primary effect layer; may be disabled without changing ambient light |
+| Ambient | Independent procedural material and up to four composable sources; may be disabled without changing the subject |
+| Ambient coordinates | Normalized window coordinates; values outside `0..=1` place centers beyond the window |
+| Effect switching | Preserves playback state, ambient configuration, information architecture, and control positions |
 | Feature input | Spectrum, pitch, loudness, low/mid/high bands, and transients from each PCM buffer |
 | Temporal response | Time-based attack and release smoothing |
 | Paused response | Envelopes decay instead of freezing the final feature frame |
@@ -25,7 +25,7 @@ and shared visual behavior. For the design principles behind the stage, use
 
 The inspector keeps its heading and Subject/Ambient tabs outside the scroll
 viewport. Each tab owns a separate scroll position. Subject has its own enable
-switch, one effect selector, and a response card. Lighting has a separate enable
+switch, one effect selector, and a response card. Ambient has a separate enable
 switch and divides material and source editing into distinct surfaces. Both
 switches preserve the disabled module's settings.
 
@@ -67,11 +67,11 @@ second stage-level dispatch table.
 | `visual_stage.subject.tuning.glow` | `0.9` | `0.25`–`1.50` |
 
 The application normalizes values to these ranges and persists the subject
-module atomically with the lighting module.
+module atomically with the ambient module.
 
-## Lighting Layer
+## Ambient Layer
 
-Lighting is persisted as `visual_stage.lighting`, independently from
+Ambient light is persisted as `visual_stage.ambient`, independently from
 `visual_stage.subject`. Disabling either module does not mutate or reset the
 other module's settings.
 
@@ -110,7 +110,7 @@ visible scene. Circle sources use one lobe. Oval and beam sources use a fixed,
 bounded nine-lobe approximation so anisotropic light can respond to audio
 without per-frame texture generation or upload.
 
-The render snapshot shares lighting data across viewport clones and replaces it
+The render snapshot shares ambient data across viewport clones and replaces it
 only when a setting changes. Material textures use a bounded 512-pixel long
 edge and a 224-pixel minimum short edge. They are cached by material settings,
 relevant source geometry, palette, and target aspect ratio; animation moves an
@@ -136,15 +136,17 @@ decoding remain in the media/UI boundary rather than the reusable renderer.
 Configuration version 9 stores both modules under `visual_stage`. Older
 top-level `visual_preset`, `visual_intensity`, `visual_motion`, `visual_depth`,
 `visual_glow`, and `atmosphere` values are migrated during normalization.
+The former `visual_stage.lighting` key is accepted as an alias for
+`visual_stage.ambient`.
 Legacy `composition_visible` becomes `visual_stage.subject.enabled`, preserving
-an atmosphere-only setup as a lighting-only setup.
+an atmosphere-only setup as an ambient-only setup.
 
 ## Application Background Presentation
 
-Outside the visual page, enabled subject and lighting modules render in full-window
+Outside the visual page, enabled subject and ambient modules render in full-window
 coordinates behind application surfaces. Opening the visual page moves the
 same renderer into the clipped stage viewport. The shell outside that viewport
-uses the same lighting configuration, so navigation does not switch to a separate
+uses the same ambient configuration, so navigation does not switch to a separate
 glow implementation.
 
 Content panels, navigation, and playback controls own their contrast through
