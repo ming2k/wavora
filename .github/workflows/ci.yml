@@ -42,7 +42,7 @@ jobs:
             libfribidi-dev
 
       - name: Install Meson ≥ 1.8 (Optics needs the stable wayland module)
-        run: pip3 install 'meson>=1.8.0'
+        run: sudo python3 -m pip install --break-system-packages 'meson>=1.8.0'
 
       - name: Cache cargo registry
         uses: actions/cache@v4
