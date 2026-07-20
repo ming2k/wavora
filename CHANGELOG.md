@@ -5,6 +5,22 @@ All notable changes to Wavora are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.3] - 2026-07-20
+
+### Fixed
+
+- CI failed to build Optics: `fribidi` was missing (required by flux-text
+  for bidirectional text shaping). Both workflows now install
+  `libfribidi-dev`.
+
+### Changed
+
+- Simplified `packaging/`: removed `install.sh` (duplicated README build
+  steps) and `wavora-launcher` (only set `LD_LIBRARY_PATH`, a no-op for
+  static-linked releases). The binary now ships directly at `bin/wavora`.
+- The release workflow injects the AppStream `<release>` version from
+  the git tag, so version bumps only touch `Cargo.toml` + `CHANGELOG.md`.
+
 ## [0.0.2] - 2026-07-20
 
 ### Changed
@@ -57,5 +73,6 @@ Wayland + Vulkan rendering.
   to a specific Optics commit, so any consumer can build without a
   sibling Optics checkout.
 
+[0.0.3]: https://github.com/ming2k/wavora/releases/tag/v0.0.3
 [0.0.2]: https://github.com/ming2k/wavora/releases/tag/v0.0.2
 [0.0.1]: https://github.com/ming2k/wavora/releases/tag/v0.0.1
