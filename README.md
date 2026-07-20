@@ -12,7 +12,9 @@ stack, with on-device audio decoding and an audio-reactive visual stage.
 
 ## Demo
 
-https://github.com/ming2k/wavora/raw/main/docs/media/demo.mp4
+<p align="center">
+  <video src="docs/media/demo.mp4" controls width="100%"></video>
+</p>
 
 ## Download
 

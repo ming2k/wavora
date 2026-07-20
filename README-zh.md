@@ -12,7 +12,9 @@
 
 ## 演示
 
-https://github.com/ming2k/wavora/raw/main/docs/media/demo.mp4
+<p align="center">
+  <video src="docs/media/demo.mp4" controls width="100%"></video>
+</p>
 
 ## 下载
 
