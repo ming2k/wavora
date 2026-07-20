@@ -38,7 +38,8 @@ jobs:
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
             gstreamer1.0-pipewire gstreamer1.0-tools \
             libpipewire-0.3-dev libsystemd-dev \
-            libfontconfig1-dev libfreetype-dev libharfbuzz-dev
+            libfontconfig1-dev libfreetype-dev libharfbuzz-dev \
+            libfribidi-dev
 
       - name: Cache cargo registry
         uses: actions/cache@v4

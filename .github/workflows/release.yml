@@ -39,7 +39,8 @@ jobs:
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
             gstreamer1.0-pipewire gstreamer1.0-tools \
             libpipewire-0.3-dev libsystemd-dev \
-            libfontconfig1-dev libfreetype-dev libharfbuzz-dev
+            libfontconfig1-dev libfreetype-dev libharfbuzz-dev \
+            libfribidi-dev
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -107,7 +108,7 @@ jobs:
           VERSION="${TAG#v}"
           STAGE_DIR="wavora-${TAG}-x86_64-linux"
           rm -rf "$STAGE_DIR" stage
-          mkdir -p "$STAGE_DIR/libexec/wavora" "$STAGE_DIR/bin" \
+          mkdir -p "$STAGE_DIR/bin" \
                    "$STAGE_DIR/share/applications" \
                    "$STAGE_DIR/share/icons/hicolor/scalable/apps" \
                    "$STAGE_DIR/share/metainfo"
@@ -122,7 +123,6 @@ jobs:
           import re, sys
           src_path, out_path, version, date = sys.argv[1:5]
           xml = open(src_path).read()
-          # Prepend the new <release> inside <releases> if not already there.
           if f'version="{version}"' not in xml:
               xml = xml.replace(
                   '<releases>',
@@ -132,8 +132,7 @@ jobs:
           open(out_path, 'w').write(xml)
           PY
 
-          install -Dm755 target/release/wavora "$STAGE_DIR/libexec/wavora/wavora"
-          install -Dm755 packaging/wavora-launcher "$STAGE_DIR/bin/wavora"
+          install -Dm755 target/release/wavora "$STAGE_DIR/bin/wavora"
           install -Dm755 packaging/install-release.sh "$STAGE_DIR/install.sh"
           install -Dm644 packaging/io.github.ming2k.Wavora.desktop \
             "$STAGE_DIR/share/applications/io.github.ming2k.Wavora.desktop"
@@ -141,7 +140,7 @@ jobs:
             "$STAGE_DIR/share/icons/hicolor/scalable/apps/io.github.ming2k.Wavora.svg"
           install -Dm644 README.md "$STAGE_DIR/README.md"
           install -Dm644 LICENSE "$STAGE_DIR/LICENSE"
-          chmod +x "$STAGE_DIR/install.sh"
+          chmod +x "$STAGE_DIR/install.sh" "$STAGE_DIR/bin/wavora"
 
           mkdir stage
           tar -C "$STAGE_DIR/.." --owner=0 --group=0 \
