@@ -5,6 +5,15 @@ All notable changes to Wavora are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.4] - 2026-07-20
+
+### Fixed
+
+- CI built Optics with meson 1.3.2 (Ubuntu 24.04 apt) which rejected
+  `import('wayland')` — stabilized only in meson 1.8.0. The workflows now
+  `sudo pip3 install 'meson>=1.8.0'` to `/usr/local/bin`, shadowing the
+  apt version via PATH ordering.
+
 ## [0.0.3] - 2026-07-20
 
 ### Fixed
@@ -73,6 +82,7 @@ Wayland + Vulkan rendering.
   to a specific Optics commit, so any consumer can build without a
   sibling Optics checkout.
 
+[0.0.4]: https://github.com/ming2k/wavora/releases/tag/v0.0.4
 [0.0.3]: https://github.com/ming2k/wavora/releases/tag/v0.0.3
 [0.0.2]: https://github.com/ming2k/wavora/releases/tag/v0.0.2
 [0.0.1]: https://github.com/ming2k/wavora/releases/tag/v0.0.1
