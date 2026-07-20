@@ -31,7 +31,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential meson ninja-build pkg-config \
+            build-essential ninja-build pkg-config \
             libvulkan-dev vulkan-tools glslang-tools \
             libwayland-dev libxkbcommon-dev wayland-protocols \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
@@ -40,6 +40,9 @@ jobs:
             libpipewire-0.3-dev libsystemd-dev \
             libfontconfig1-dev libfreetype-dev libharfbuzz-dev \
             libfribidi-dev
+
+      - name: Install Meson ≥ 1.8 (Optics needs the stable wayland module)
+        run: pip3 install 'meson>=1.8.0'
 
       - name: Cache cargo registry
         uses: actions/cache@v4
