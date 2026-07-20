@@ -12,9 +12,8 @@
 
 ## 演示
 
-<p align="center">
-  <video src="docs/media/demo.mp4" controls width="100%"></video>
-</p>
+<!-- 视频通过 GitHub issue 评论框上传，得到 user-attachments 链接，单独成行即可自动嵌入 -->
+https://github.com/user-attachments/assets/ef64b155-e253-45b8-aa9d-d9e8a723a622
 
 ## 下载
 
