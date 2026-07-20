@@ -29,9 +29,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential ninja-build pkg-config \
+            build-essential gcc-15 g++-15 ninja-build pkg-config \
             libvulkan-dev vulkan-tools glslang-tools \
             libwayland-dev libxkbcommon-dev wayland-protocols \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
@@ -68,6 +69,7 @@ jobs:
       - name: Build and install Optics (static)
         env:
           OPTICS_REV: ${{ steps.optics_rev.outputs.rev }}
+          CC: gcc-15
         run: |
           git clone https://github.com/ming2k/optics.git /tmp/optics
           git -C /tmp/optics checkout "$OPTICS_REV"
