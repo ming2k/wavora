@@ -1540,7 +1540,7 @@ dependencies = [
 
 [[package]]
 name = "wavora"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "directories",
  "flux",
@@ -1560,11 +1560,11 @@ dependencies = [
 
 [[package]]
 name = "wavora-audio-analysis"
-version = "0.2.0"
+version = "0.0.1"
 
 [[package]]
 name = "wavora-core"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "serde",
  "uuid",
@@ -1572,14 +1572,14 @@ dependencies = [
 
 [[package]]
 name = "wavora-i18n"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "wavora-library"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "rusqlite",
  "thiserror",
@@ -1590,7 +1590,7 @@ dependencies = [
 
 [[package]]
 name = "wavora-media"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "crossbeam-channel",
@@ -1609,14 +1609,14 @@ dependencies = [
 
 [[package]]
 name = "wavora-ui"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "iris",
 ]
 
 [[package]]
 name = "wavora-visuals"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "flux",
  "iris",
