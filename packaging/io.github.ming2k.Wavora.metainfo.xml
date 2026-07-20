@@ -30,9 +30,11 @@
     <category>Player</category>
   </categories>
   <url type="homepage">https://github.com/ming2k/wavora</url>
+  <!-- The <releases> entry is injected at release time by the CI
+       workflow from the tag (vX.Y.Z → version X.Y.Z). Keep this as a
+       placeholder for local installs. -->
   <releases>
-    <release version="0.0.2" date="2026-07-20"/>
-    <release version="0.0.1" date="2026-07-20"/>
+    <release version="0.0.0" date="2026-01-01"/>
   </releases>
   <content_rating type="oars-1.1"/>
 </component>

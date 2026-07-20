@@ -104,21 +104,41 @@ jobs:
             echo "::error::Could not determine release tag"
             exit 1
           fi
+          VERSION="${TAG#v}"
           STAGE_DIR="wavora-${TAG}-x86_64-linux"
           rm -rf "$STAGE_DIR" stage
           mkdir -p "$STAGE_DIR/libexec/wavora" "$STAGE_DIR/bin" \
                    "$STAGE_DIR/share/applications" \
                    "$STAGE_DIR/share/icons/hicolor/scalable/apps" \
                    "$STAGE_DIR/share/metainfo"
+
+          # Inject the release version into the metainfo copy (not the
+          # source). The source file's <releases> stays as a placeholder;
+          # the staged copy gets the real version + today's date.
+          DATE=$(date +%F)
+          python3 - packaging/io.github.ming2k.Wavora.metainfo.xml \
+            "$STAGE_DIR/share/metainfo/io.github.ming2k.Wavora.metainfo.xml" \
+            "$VERSION" "$DATE" <<'PY'
+          import re, sys
+          src_path, out_path, version, date = sys.argv[1:5]
+          xml = open(src_path).read()
+          # Prepend the new <release> inside <releases> if not already there.
+          if f'version="{version}"' not in xml:
+              xml = xml.replace(
+                  '<releases>',
+                  f'<releases>\n    <release version="{version}" date="{date}"/>',
+                  1,
+              )
+          open(out_path, 'w').write(xml)
+          PY
+
           install -Dm755 target/release/wavora "$STAGE_DIR/libexec/wavora/wavora"
           install -Dm755 packaging/wavora-launcher "$STAGE_DIR/bin/wavora"
-          install -Dm644 packaging/install-release.sh "$STAGE_DIR/install.sh"
+          install -Dm755 packaging/install-release.sh "$STAGE_DIR/install.sh"
           install -Dm644 packaging/io.github.ming2k.Wavora.desktop \
             "$STAGE_DIR/share/applications/io.github.ming2k.Wavora.desktop"
           install -Dm644 packaging/io.github.ming2k.Wavora.svg \
             "$STAGE_DIR/share/icons/hicolor/scalable/apps/io.github.ming2k.Wavora.svg"
-          install -Dm644 packaging/io.github.ming2k.Wavora.metainfo.xml \
-            "$STAGE_DIR/share/metainfo/io.github.ming2k.Wavora.metainfo.xml"
           install -Dm644 README.md "$STAGE_DIR/README.md"
           install -Dm644 LICENSE "$STAGE_DIR/LICENSE"
           chmod +x "$STAGE_DIR/install.sh"
