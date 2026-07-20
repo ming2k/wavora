@@ -5,6 +5,16 @@ All notable changes to Wavora are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.5] - 2026-07-20
+
+### Fixed
+
+- Optics adds `--embed-dir` to embed SPIR-V shaders via C23 `#embed`
+  (`libs/flux/meson.build:99`), which requires GCC 15+. The CI runner's
+  default GCC 13 rejected the flag. Both workflows now install `gcc-15`
+  from `ppa:ubuntu-toolchain-r/test` and set `CC=gcc-15` for the meson
+  build.
+
 ## [0.0.4] - 2026-07-20
 
 ### Fixed
@@ -82,6 +92,7 @@ Wayland + Vulkan rendering.
   to a specific Optics commit, so any consumer can build without a
   sibling Optics checkout.
 
+[0.0.5]: https://github.com/ming2k/wavora/releases/tag/v0.0.5
 [0.0.4]: https://github.com/ming2k/wavora/releases/tag/v0.0.4
 [0.0.3]: https://github.com/ming2k/wavora/releases/tag/v0.0.3
 [0.0.2]: https://github.com/ming2k/wavora/releases/tag/v0.0.2
