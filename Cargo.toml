@@ -21,10 +21,16 @@ repository = "https://github.com/ming2k/wavora"
 [workspace.dependencies]
 crossbeam-channel = "0.5.15"
 blake3 = "1.8.5"
-flux = { path = "../optics/bindings/flux-rs/crates/flux" }
+# Optics graphics stack (Iris / Lens / Flux). Pinned to a commit on
+# https://github.com/ming2k/optics so any consumer can build without a
+# sibling optics checkout. The native C libraries still have to be
+# installed separately (see README → Build); these git deps only pull in
+# the Rust `-rs` bindings, which locate libiris/liblens/libflux via
+# pkg-config at build time.
+flux = { git = "https://github.com/ming2k/optics.git", rev = "03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e", package = "flux" }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
-iris = { path = "../optics/bindings/iris-rs/crates/iris" }
-lens = { path = "../optics/bindings/lens-rs/crates/lens" }
+iris = { git = "https://github.com/ming2k/optics.git", rev = "03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e", package = "iris" }
+lens = { git = "https://github.com/ming2k/optics.git", rev = "03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e", package = "lens" }
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 rusty-chromaprint = "=0.3.0"
 serde = { version = "1.0.228", features = ["derive"] }

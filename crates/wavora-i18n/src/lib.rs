@@ -480,7 +480,9 @@ const fn chinese(key: Key) -> &'static str {
         Key::Treble => "高频",
         Key::ScaleResponse => "音频尺寸响应",
         Key::StrengthResponse => "音频亮度响应",
-        Key::AmbientHint => "环境光与主体相互独立，主体自身的辉光由“主体”页控制。光源可以放在窗口外，只让柔和的光晕尾部进入画面。",
+        Key::AmbientHint => {
+            "环境光与主体相互独立，主体自身的辉光由“主体”页控制。光源可以放在窗口外，只让柔和的光晕尾部进入画面。"
+        }
         Key::SettingsDescription => "播放与视觉偏好只保存在本机。",
         Key::DefaultVolume => "默认音量",
         Key::Language => "语言",

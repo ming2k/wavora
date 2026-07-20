@@ -284,6 +284,7 @@ dependencies = [
 [[package]]
 name = "flux"
 version = "0.1.1"
+source = "git+https://github.com/ming2k/optics.git?rev=03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e#03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e"
 dependencies = [
  "flux-sys",
 ]
@@ -291,6 +292,7 @@ dependencies = [
 [[package]]
 name = "flux-sys"
 version = "0.1.1"
+source = "git+https://github.com/ming2k/optics.git?rev=03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e#03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -597,6 +599,7 @@ dependencies = [
 [[package]]
 name = "iris"
 version = "0.1.0"
+source = "git+https://github.com/ming2k/optics.git?rev=03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e#03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e"
 dependencies = [
  "iris-sys",
  "lens",
@@ -606,6 +609,7 @@ dependencies = [
 [[package]]
 name = "iris-sys"
 version = "0.1.0"
+source = "git+https://github.com/ming2k/optics.git?rev=03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e#03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -664,6 +668,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 [[package]]
 name = "lens"
 version = "0.1.0"
+source = "git+https://github.com/ming2k/optics.git?rev=03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e#03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e"
 dependencies = [
  "flux",
  "lens-sys",
@@ -672,6 +677,7 @@ dependencies = [
 [[package]]
 name = "lens-sys"
 version = "0.1.0"
+source = "git+https://github.com/ming2k/optics.git?rev=03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e#03ddb1c566ad7553f26e9f0f0e7f97c2cf45e09e"
 dependencies = [
  "bindgen",
  "pkg-config",

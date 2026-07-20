@@ -569,10 +569,7 @@ mod tests {
 
         assert!(recovered.is_empty());
         assert_eq!(loaded.config.version, CONFIG_VERSION);
-        assert_eq!(
-            loaded.config.visual_stage.ambient,
-            AmbientLayer::default()
-        );
+        assert_eq!(loaded.config.visual_stage.ambient, AmbientLayer::default());
         assert_eq!(loaded.config.visual_stage.subject.effect, 2);
         assert_eq!(loaded.config.playlist_display, PlaylistDisplay::List);
         assert_eq!(loaded.state.recent_uris, ["file:///music/recent.flac"]);

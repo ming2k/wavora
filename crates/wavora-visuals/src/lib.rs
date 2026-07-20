@@ -2882,8 +2882,7 @@ mod tests {
 
         assert!(light_audio_drive(&features, LightAudioResponse::None).abs() < f32::EPSILON);
         assert!(
-            (light_audio_drive(&features, LightAudioResponse::Energy) - 0.62).abs()
-                < f32::EPSILON
+            (light_audio_drive(&features, LightAudioResponse::Energy) - 0.62).abs() < f32::EPSILON
         );
         assert!(
             (light_audio_drive(&features, LightAudioResponse::Bass) - 0.81).abs() < f32::EPSILON
@@ -2892,8 +2891,7 @@ mod tests {
             (light_audio_drive(&features, LightAudioResponse::Mid) - 0.47).abs() < f32::EPSILON
         );
         assert!(
-            (light_audio_drive(&features, LightAudioResponse::Treble) - 1.0).abs()
-                < f32::EPSILON
+            (light_audio_drive(&features, LightAudioResponse::Treble) - 1.0).abs() < f32::EPSILON
         );
         assert!(light_audio_drive(&features, LightAudioResponse::Onset).abs() < f32::EPSILON);
     }

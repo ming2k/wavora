@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to publish (must already exist in the repo)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: Build self-contained Linux release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config \
+            libvulkan-dev vulkan-tools \
+            libwayland-dev libxkbcommon-dev wayland-protocols \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-pipewire gstreamer1.0-tools \
+            libpipewire-0.3-dev libsystemd-dev \
+            libfontconfig1-dev libfreetype-dev libharfbuzz-dev
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-cargo-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+
+      - name: Resolve pinned Optics rev from Cargo.lock
+        id: optics_rev
+        run: |
+          set -euo pipefail
+          REV=$(grep -oP 'optics\.git\?rev=\K[0-9a-f]{40}' Cargo.lock | head -1)
+          if [ -z "$REV" ]; then
+            echo "::error::Could not find optics rev in Cargo.lock"
+            exit 1
+          fi
+          echo "Resolved Optics rev: $REV"
+          echo "rev=$REV" >> "$GITHUB_OUTPUT"
+
+      - name: Build and install Optics (static)
+        env:
+          OPTICS_REV: ${{ steps.optics_rev.outputs.rev }}
+        run: |
+          git clone https://github.com/ming2k/optics.git /tmp/optics
+          git -C /tmp/optics checkout "$OPTICS_REV"
+          meson setup /tmp/optics/build /tmp/optics \
+            --prefix=/tmp/optics-prefix \
+            -Ddefault_library=static \
+            -Dexamples=false \
+            -Dtests=false
+          meson compile -C /tmp/optics/build
+          meson install -C /tmp/optics/build
+
+      - name: Build Wavora (release, static Optics)
+        env:
+          PKG_CONFIG_PATH: /tmp/optics-prefix/lib/pkgconfig
+          PKG_CONFIG_ALL_STATIC: '1'
+          FLUX_USE_INSTALLED: '1'
+          LENS_USE_INSTALLED: '1'
+          IRIS_USE_INSTALLED: '1'
+        run: cargo build --release --locked
+
+      - name: Verify static linking
+        run: |
+          set -e
+          if ldd target/release/wavora | grep -E 'lib(iris|lens|flux)\.so'; then
+            echo "::error::Optics shared libraries found in runtime deps — expected static linking"
+            exit 1
+          fi
+          echo "OK: no libiris/liblens/libflux in runtime deps"
+
+      - name: Stage release tree
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG:-${GITHUB_REF##*/}}"
+          if [ -z "$TAG" ] || [ "$TAG" = "${GITHUB_REF}" ]; then
+            echo "::error::Could not determine release tag"
+            exit 1
+          fi
+          STAGE_DIR="wavora-${TAG}-x86_64-linux"
+          rm -rf "$STAGE_DIR" stage
+          mkdir -p "$STAGE_DIR/libexec/wavora" "$STAGE_DIR/bin" \
+                   "$STAGE_DIR/share/applications" \
+                   "$STAGE_DIR/share/icons/hicolor/scalable/apps" \
+                   "$STAGE_DIR/share/metainfo"
+          install -Dm755 target/release/wavora "$STAGE_DIR/libexec/wavora/wavora"
+          install -Dm755 packaging/wavora-launcher "$STAGE_DIR/bin/wavora"
+          install -Dm644 packaging/install-release.sh "$STAGE_DIR/install.sh"
+          install -Dm644 packaging/io.github.ming2k.Wavora.desktop \
+            "$STAGE_DIR/share/applications/io.github.ming2k.Wavora.desktop"
+          install -Dm644 packaging/io.github.ming2k.Wavora.svg \
+            "$STAGE_DIR/share/icons/hicolor/scalable/apps/io.github.ming2k.Wavora.svg"
+          install -Dm644 packaging/io.github.ming2k.Wavora.metainfo.xml \
+            "$STAGE_DIR/share/metainfo/io.github.ming2k.Wavora.metainfo.xml"
+          install -Dm644 README.md "$STAGE_DIR/README.md"
+          install -Dm644 LICENSE "$STAGE_DIR/LICENSE"
+          chmod +x "$STAGE_DIR/install.sh"
+
+          mkdir stage
+          tar -C "$STAGE_DIR/.." --owner=0 --group=0 \
+            --sort=name -czf "stage/${STAGE_DIR}.tar.gz" "$STAGE_DIR"
+          ( cd stage && sha256sum "${STAGE_DIR}.tar.gz" > "${STAGE_DIR}.tar.gz.sha256" )
+          ls -la stage/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wavora-x86_64-linux
+          path: stage/
+
+  release:
+    name: Publish GitHub release
+    needs: build-linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wavora-x86_64-linux
+          path: stage/
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            stage/*.tar.gz
+            stage/*.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true

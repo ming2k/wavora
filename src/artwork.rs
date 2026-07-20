@@ -280,8 +280,14 @@ where
             };
             entry.pending = None;
             entry.texture = decoded.and_then(|(width, height, pixels)| {
-                Image::from_bytes(&device, width, height, Format::FLUX_FORMAT_RGBA8_SRGB, &pixels)
-                    .ok()
+                Image::from_bytes(
+                    &device,
+                    width,
+                    height,
+                    Format::FLUX_FORMAT_RGBA8_SRGB,
+                    &pixels,
+                )
+                .ok()
             });
             entry.next_candidate = candidate_index + 1;
             entry.prepared =

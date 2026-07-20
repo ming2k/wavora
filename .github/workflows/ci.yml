@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  verify:
+    name: fmt + clippy + test + build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config \
+            libvulkan-dev vulkan-tools \
+            libwayland-dev libxkbcommon-dev wayland-protocols \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-pipewire gstreamer1.0-tools \
+            libpipewire-0.3-dev libsystemd-dev \
+            libfontconfig1-dev libfreetype-dev libharfbuzz-dev
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+
+      - name: Resolve pinned Optics rev from Cargo.lock
+        id: optics_rev
+        run: |
+          set -euo pipefail
+          REV=$(grep -oP 'optics\.git\?rev=\K[0-9a-f]{40}' Cargo.lock | head -1)
+          if [ -z "$REV" ]; then
+            echo "::error::Could not find optics rev in Cargo.lock"
+            exit 1
+          fi
+          echo "Resolved Optics rev: $REV"
+          echo "rev=$REV" >> "$GITHUB_OUTPUT"
+
+      - name: Build and install Optics (static)
+        env:
+          OPTICS_REV: ${{ steps.optics_rev.outputs.rev }}
+        run: |
+          git clone https://github.com/ming2k/optics.git /tmp/optics
+          git -C /tmp/optics checkout "$OPTICS_REV"
+          meson setup /tmp/optics/build /tmp/optics \
+            --prefix=/tmp/optics-prefix \
+            -Ddefault_library=static \
+            -Dexamples=false \
+            -Dtests=false
+          meson compile -C /tmp/optics/build
+          meson install -C /tmp/optics/build
+
+      - name: Configure build environment
+        run: |
+          echo "PKG_CONFIG_PATH=/tmp/optics-prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_ALL_STATIC=1" >> "$GITHUB_ENV"
+          echo "FLUX_USE_INSTALLED=1" >> "$GITHUB_ENV"
+          echo "LENS_USE_INSTALLED=1" >> "$GITHUB_ENV"
+          echo "IRIS_USE_INSTALLED=1" >> "$GITHUB_ENV"
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --all-targets
+
+      - name: cargo build (release, locked)
+        run: cargo build --workspace --release --locked
+
+      - name: Verify Optics libraries are statically linked
+        run: |
+          set -e
+          if ldd target/release/wavora | grep -E 'lib(iris|lens|flux)\.so'; then
+            echo "::error::Optics shared libraries found in runtime deps — expected static linking"
+            exit 1
+          fi
+          echo "OK: no libiris/liblens/libflux in runtime deps"

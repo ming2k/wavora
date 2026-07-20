@@ -3,8 +3,17 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=DEP_IRIS_RS_RPATHS");
+    // Install layout (packaging/install.sh): the binary lives at
+    // $PREFIX/libexec/wavora/wavora and the bundled Optics shared
+    // libraries at $PREFIX/lib/wavora, so a relative $ORIGIN rpath
+    // lets the loader find them without LD_LIBRARY_PATH.
     println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../../lib/wavora");
 
+    // Dev layout: relay the rpaths that `iris` (the safe wrapper crate)
+    // publishes via its `links = "iris_rs"` metadata. These point at the
+    // meson build tree (../optics/build) when the *_BUILD_DIR env vars or
+    // an adjacent optics checkout are used, so `cargo run` finds
+    // libiris/liblens/libflux without an install step.
     if let Ok(rpaths) = std::env::var("DEP_IRIS_RS_RPATHS") {
         let dirs = rpaths
             .split(';')
@@ -20,7 +29,7 @@ fn main() {
     }
 
     // Compatibility fallback for older Iris checkouts that do not publish
-    // safe-wrapper rpath metadata yet.
+    // safe-wrapper rpath metadata yet: detect a sibling optics checkout.
     let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") else {
         return;
     };
