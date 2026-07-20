@@ -76,6 +76,7 @@ jobs:
           git -C /tmp/optics checkout "$OPTICS_REV"
           meson setup /tmp/optics/build /tmp/optics \
             --prefix=/tmp/optics-prefix \
+            --libdir=lib \
             -Ddefault_library=static \
             -Dexamples=false \
             -Dtests=false
